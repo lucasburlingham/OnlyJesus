@@ -19,6 +19,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -50,6 +51,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
+private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
 private val Context.dataStore by preferencesDataStore(name = "reader_settings")
 
 class MainActivity : ComponentActivity() {
@@ -73,13 +75,22 @@ private fun ReaderScreen(context: Context) {
     var selectedVersion by remember { mutableStateOf<InstalledVersion?>(null) }
     var currentBook by remember { mutableStateOf(1) }
     var currentChapter by remember { mutableStateOf(1) }
+    var currentVerse by remember { mutableStateOf(1) }
     var fontFamilyKey by remember { mutableStateOf("serif") }
     var fontSizeSp by remember { mutableStateOf(20f) }
     var status by remember { mutableStateOf("No offline Bible selected.") }
     var isBusy by remember { mutableStateOf(false) }
     var installedExpanded by remember { mutableStateOf(false) }
     var remoteExpanded by remember { mutableStateOf(false) }
+    var bookExpanded by remember { mutableStateOf(false) }
+    var chapterExpanded by remember { mutableStateOf(false) }
+    var verseExpanded by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
     val verses = remember { mutableStateListOf<Verse>() }
+    val availableBooks = remember { mutableStateListOf<Int>() }
+    val availableChapters = remember { mutableStateListOf<Int>() }
+    val availableVerses = remember { mutableStateListOf<Int>() }
+    val searchResults = remember { mutableStateListOf<VerseSearchHit>() }
     val installedVersions = remember { mutableStateListOf<InstalledVersion>() }
     val remoteVersions = remember { mutableStateListOf<RemoteVersion>() }
 
@@ -98,15 +109,39 @@ private fun ReaderScreen(context: Context) {
         val version = selectedVersion ?: return
         scope.launch {
             isBusy = true
-            val chapterText = withContext(Dispatchers.IO) {
-                reader.readChapter(version.file, currentBook, currentChapter)
+            val chapterLoad = withContext(Dispatchers.IO) {
+                val books = reader.availableBooks(version.file)
+                val normalizedBook = books.firstOrNull { it == currentBook } ?: books.firstOrNull() ?: 1
+                val chapters = reader.availableChapters(version.file, normalizedBook)
+                val normalizedChapter = chapters.firstOrNull { it == currentChapter } ?: chapters.firstOrNull() ?: 1
+                val chapterText = reader.readChapter(version.file, normalizedBook, normalizedChapter)
+                val verseNumbers = chapterText.map { it.number }
+                val normalizedVerse = verseNumbers.firstOrNull { it == currentVerse } ?: verseNumbers.firstOrNull() ?: 1
+                ChapterLoad(
+                    book = normalizedBook,
+                    chapter = normalizedChapter,
+                    verse = normalizedVerse,
+                    books = books,
+                    chapters = chapters,
+                    verses = verseNumbers,
+                    chapterText = chapterText
+                )
             }
+            currentBook = chapterLoad.book
+            currentChapter = chapterLoad.chapter
+            currentVerse = chapterLoad.verse
+            availableBooks.clear()
+            availableBooks.addAll(chapterLoad.books)
+            availableChapters.clear()
+            availableChapters.addAll(chapterLoad.chapters)
+            availableVerses.clear()
+            availableVerses.addAll(chapterLoad.verses)
             verses.clear()
-            verses.addAll(chapterText)
-            status = if (chapterText.isEmpty()) {
+            verses.addAll(chapterLoad.chapterText)
+            status = if (chapterLoad.chapterText.isEmpty()) {
                 "No text found at Book $currentBook Chapter $currentChapter."
             } else {
-                "${version.label}: Book $currentBook Chapter $currentChapter"
+                "${version.label}: Book $currentBook Chapter $currentChapter Verse $currentVerse"
             }
             prefs.savePosition(currentBook, currentChapter)
             isBusy = false
@@ -230,7 +265,90 @@ private fun ReaderScreen(context: Context) {
                     }
                 }) { Text("Next") }
 
-                Text("Book $currentBook Chapter $currentChapter", modifier = Modifier.padding(top = 10.dp))
+                Text("Book $currentBook Chapter $currentChapter Verse $currentVerse", modifier = Modifier.padding(top = 10.dp))
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                TextButton(enabled = availableBooks.isNotEmpty(), onClick = { bookExpanded = true }) {
+                    Text("Book: $currentBook")
+                }
+                DropdownMenu(expanded = bookExpanded, onDismissRequest = { bookExpanded = false }) {
+                    availableBooks.forEach { book ->
+                        DropdownMenuItem(
+                            text = { Text("Book $book") },
+                            onClick = {
+                                bookExpanded = false
+                                currentBook = book
+                                currentChapter = 1
+                                currentVerse = 1
+                                loadChapter()
+                            }
+                        )
+                    }
+                }
+
+                TextButton(enabled = availableChapters.isNotEmpty(), onClick = { chapterExpanded = true }) {
+                    Text("Chapter: $currentChapter")
+                }
+                DropdownMenu(expanded = chapterExpanded, onDismissRequest = { chapterExpanded = false }) {
+                    availableChapters.forEach { chapter ->
+                        DropdownMenuItem(
+                            text = { Text("Chapter $chapter") },
+                            onClick = {
+                                chapterExpanded = false
+                                currentChapter = chapter
+                                currentVerse = 1
+                                loadChapter()
+                            }
+                        )
+                    }
+                }
+
+                TextButton(enabled = availableVerses.isNotEmpty(), onClick = { verseExpanded = true }) {
+                    Text("Verse: $currentVerse")
+                }
+                DropdownMenu(expanded = verseExpanded, onDismissRequest = { verseExpanded = false }) {
+                    availableVerses.forEach { verse ->
+                        DropdownMenuItem(
+                            text = { Text("Verse $verse") },
+                            onClick = {
+                                verseExpanded = false
+                                currentVerse = verse
+                                status = "${selectedVersion?.label ?: "Bible"}: Book $currentBook Chapter $currentChapter Verse $currentVerse"
+                            }
+                        )
+                    }
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = { Text("Search (LIKE)") },
+                    modifier = Modifier.weight(1f)
+                )
+                Button(
+                    enabled = !isBusy && selectedVersion != null && searchQuery.isNotBlank(),
+                    onClick = {
+                        scope.launch {
+                            val version = selectedVersion ?: return@launch
+                            isBusy = true
+                            val query = searchQuery.trim()
+                            val matches = withContext(Dispatchers.IO) {
+                                reader.searchVersesLike(version.file, query)
+                            }
+                            searchResults.clear()
+                            searchResults.addAll(matches)
+                            status = if (matches.isEmpty()) {
+                                "No results for \"$query\"."
+                            } else {
+                                "Found ${matches.size} result(s) for \"$query\"."
+                            }
+                            isBusy = false
+                        }
+                    }
+                ) { Text("Find") }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -265,10 +383,24 @@ private fun ReaderScreen(context: Context) {
                     .weight(1f),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                items(searchResults) { result ->
+                    TextButton(onClick = {
+                        currentBook = result.book
+                        currentChapter = result.chapter
+                        currentVerse = result.verse
+                        searchResults.clear()
+                        loadChapter()
+                    }) {
+                        val preview = result.text.take(SEARCH_RESULT_PREVIEW_LENGTH).let {
+                            if (result.text.length > SEARCH_RESULT_PREVIEW_LENGTH) "$it…" else it
+                        }
+                        Text("B${result.book} C${result.chapter} V${result.verse} $preview")
+                    }
+                }
                 items(verses) { verse ->
                     Text(
                         text = "${verse.number}. ${verse.text}",
-                        color = Color(0xFFE8E6E3),
+                        color = if (verse.number == currentVerse) Color(0xFF82A98E) else Color(0xFFE8E6E3),
                         fontSize = fontSizeSp.sp,
                         fontFamily = selectedFontFamily()
                     )
@@ -293,6 +425,16 @@ private fun AmoledTheme(content: @Composable () -> Unit) {
 }
 
 data class Verse(val number: Int, val text: String)
+data class VerseSearchHit(val book: Int, val chapter: Int, val verse: Int, val text: String)
+private data class ChapterLoad(
+    val book: Int,
+    val chapter: Int,
+    val verse: Int,
+    val books: List<Int>,
+    val chapters: List<Int>,
+    val verses: List<Int>,
+    val chapterText: List<Verse>
+)
 data class ChapterLocation(val book: Int, val chapter: Int)
 data class InstalledVersion(val label: String, val file: File)
 data class RemoteVersion(val branch: String, val path: String, val sizeBytes: Long) {
@@ -421,6 +563,64 @@ private class BibleRepository(private val context: Context) {
 }
 
 private class SQLiteBibleReader {
+    fun availableBooks(dbFile: File): List<Int> {
+        val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        db.use {
+            val table = resolveVerseTable(it) ?: return emptyList()
+            val books = mutableListOf<Int>()
+            val query = "SELECT DISTINCT ${table.bookColumn} FROM ${table.tableName} ORDER BY ${table.bookColumn}"
+            it.rawQuery(query, emptyArray()).use { cursor ->
+                while (cursor.moveToNext()) {
+                    books += cursor.getInt(0)
+                }
+            }
+            return books
+        }
+    }
+
+    fun availableChapters(dbFile: File, book: Int): List<Int> {
+        val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        db.use {
+            val table = resolveVerseTable(it) ?: return emptyList()
+            val chapters = mutableListOf<Int>()
+            val query = "SELECT DISTINCT ${table.chapterColumn} FROM ${table.tableName} WHERE ${table.bookColumn} = ? ORDER BY ${table.chapterColumn}"
+            it.rawQuery(query, arrayOf(book.toString())).use { cursor ->
+                while (cursor.moveToNext()) {
+                    chapters += cursor.getInt(0)
+                }
+            }
+            return chapters
+        }
+    }
+
+    fun searchVersesLike(dbFile: File, textQuery: String, limit: Int = 100): List<VerseSearchHit> {
+        if (textQuery.isBlank()) return emptyList()
+        val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        db.use {
+            val table = resolveVerseTable(it) ?: return emptyList()
+            val hits = mutableListOf<VerseSearchHit>()
+            val escaped = escapeLikeQuery(textQuery.trim())
+            val query = """
+                SELECT ${table.bookColumn}, ${table.chapterColumn}, ${table.verseColumn}, ${table.textColumn}
+                FROM ${table.tableName}
+                WHERE ${table.textColumn} LIKE ? ESCAPE '\'
+                ORDER BY ${table.bookColumn}, ${table.chapterColumn}, ${table.verseColumn}
+                LIMIT ?
+            """.trimIndent()
+            it.rawQuery(query, arrayOf("%$escaped%", limit.toString())).use { cursor ->
+                while (cursor.moveToNext()) {
+                    hits += VerseSearchHit(
+                        book = cursor.getInt(0),
+                        chapter = cursor.getInt(1),
+                        verse = cursor.getInt(2),
+                        text = cursor.getString(3) ?: ""
+                    )
+                }
+            }
+            return hits
+        }
+    }
+
     fun readChapter(dbFile: File, book: Int, chapter: Int): List<Verse> {
         val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
         db.use {
@@ -486,6 +686,15 @@ private class SQLiteBibleReader {
         val verse = pick("verse", "verse_number", "verse_id", "v") ?: return null
         val text = pick("text", "scripture", "content", "t") ?: return null
         return MappedColumns(book, chapter, verse, text)
+    }
+
+    private fun escapeLikeQuery(query: String): String {
+        return buildString(query.length * 2) {
+            query.forEach { ch ->
+                if (ch == '\\' || ch == '%' || ch == '_') append('\\')
+                append(ch)
+            }
+        }
     }
 
     private data class MappedColumns(val book: String, val chapter: String, val verse: String, val text: String)
