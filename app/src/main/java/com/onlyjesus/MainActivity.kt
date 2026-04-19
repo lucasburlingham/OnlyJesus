@@ -51,6 +51,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
+private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
 private val Context.dataStore by preferencesDataStore(name = "reader_settings")
 
 class MainActivity : ComponentActivity() {
@@ -390,8 +391,8 @@ private fun ReaderScreen(context: Context) {
                         searchResults.clear()
                         loadChapter()
                     }) {
-                        val preview = result.text.take(100).let {
-                            if (result.text.length > 100) "$it…" else it
+                        val preview = result.text.take(SEARCH_RESULT_PREVIEW_LENGTH).let {
+                            if (result.text.length > SEARCH_RESULT_PREVIEW_LENGTH) "$it…" else it
                         }
                         Text("B${result.book} C${result.chapter} V${result.verse} $preview")
                     }
