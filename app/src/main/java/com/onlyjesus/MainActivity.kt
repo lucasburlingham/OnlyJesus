@@ -390,7 +390,7 @@ private fun ReaderScreen(context: Context) {
                         searchResults.clear()
                         loadChapter()
                     }) {
-                        Text("B${result.book} C${result.chapter} V${result.verse}  ${result.text}")
+                        Text("B${result.book} C${result.chapter} V${result.verse} ${result.text}")
                     }
                 }
                 items(verses) { verse ->
@@ -686,9 +686,9 @@ private class SQLiteBibleReader {
 
     private fun escapeLikeQuery(query: String): String {
         return query
+            .replace("\\", "\\\\")
             .replace("%", "\\%")
             .replace("_", "\\_")
-            .replace("\\", "\\\\")
     }
 
     private data class MappedColumns(val book: String, val chapter: String, val verse: String, val text: String)
