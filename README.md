@@ -18,4 +18,4 @@ From the repository root:
 
 The release APK is generated at:
 
-`/home/runner/work/OnlyJesus/OnlyJesus/app/build/outputs/apk/release/app-release.apk`
+`app/build/outputs/apk/release/app-release.apk`
