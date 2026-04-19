@@ -18,4 +18,6 @@ From the repository root:
 
 The release APK is generated at:
 
-`app/build/outputs/apk/release/app-release.apk`
+`app/build/outputs/apk/release/app-release-unsigned.apk`
+
+Note: this build output is unsigned and must be signed before it can be installed or distributed as a release artifact.
