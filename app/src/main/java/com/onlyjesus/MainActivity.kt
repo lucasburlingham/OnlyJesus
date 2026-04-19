@@ -685,10 +685,12 @@ private class SQLiteBibleReader {
     }
 
     private fun escapeLikeQuery(query: String): String {
-        return query
-            .replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
+        return buildString(query.length) {
+            query.forEach { ch ->
+                if (ch == '\\' || ch == '%' || ch == '_') append('\\')
+                append(ch)
+            }
+        }
     }
 
     private data class MappedColumns(val book: String, val chapter: String, val verse: String, val text: String)
