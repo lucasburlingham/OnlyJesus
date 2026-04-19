@@ -110,9 +110,9 @@ private fun ReaderScreen(context: Context) {
             isBusy = true
             val chapterLoad = withContext(Dispatchers.IO) {
                 val books = reader.availableBooks(version.file)
-                val normalizedBook = books.firstOrNull { it == currentBook } ?: books.firstOrNull() ?: currentBook
+                val normalizedBook = books.firstOrNull { it == currentBook } ?: books.firstOrNull() ?: 1
                 val chapters = reader.availableChapters(version.file, normalizedBook)
-                val normalizedChapter = chapters.firstOrNull { it == currentChapter } ?: chapters.firstOrNull() ?: currentChapter
+                val normalizedChapter = chapters.firstOrNull { it == currentChapter } ?: chapters.firstOrNull() ?: 1
                 val chapterText = reader.readChapter(version.file, normalizedBook, normalizedChapter)
                 val verseNumbers = chapterText.map { it.number }
                 val normalizedVerse = verseNumbers.firstOrNull { it == currentVerse } ?: verseNumbers.firstOrNull() ?: 1
@@ -686,9 +686,9 @@ private class SQLiteBibleReader {
 
     private fun escapeLikeQuery(query: String): String {
         return query
-            .replace("\\", "\\\\")
             .replace("%", "\\%")
             .replace("_", "\\_")
+            .replace("\\", "\\\\")
     }
 
     private data class MappedColumns(val book: String, val chapter: String, val verse: String, val text: String)
