@@ -390,7 +390,10 @@ private fun ReaderScreen(context: Context) {
                         searchResults.clear()
                         loadChapter()
                     }) {
-                        Text("B${result.book} C${result.chapter} V${result.verse} ${result.text}")
+                        val preview = result.text.take(100).let {
+                            if (result.text.length > 100) "$it…" else it
+                        }
+                        Text("B${result.book} C${result.chapter} V${result.verse} $preview")
                     }
                 }
                 items(verses) { verse ->
@@ -685,7 +688,7 @@ private class SQLiteBibleReader {
     }
 
     private fun escapeLikeQuery(query: String): String {
-        return buildString(query.length) {
+        return buildString(query.length * 2) {
             query.forEach { ch ->
                 if (ch == '\\' || ch == '%' || ch == '_') append('\\')
                 append(ch)
