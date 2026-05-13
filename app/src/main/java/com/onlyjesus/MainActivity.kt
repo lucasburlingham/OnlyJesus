@@ -243,7 +243,7 @@ private enum class ReferencePickerStage {
 }
 
 private fun isPublicDomainCopyright(copyright: String?): Boolean {
-    if (copyright.isNullOrBlank()) return true
+    if (copyright.isNullOrBlank()) return false
     val normalized = copyright.lowercase()
     return normalized.contains("public domain") ||
         normalized.contains("unlicense") ||
@@ -1909,14 +1909,6 @@ private fun ReaderScreen(context: Context) {
                                             }
                                         }
 
-                                        if (!showNonPublicDomainVersions) {
-                                            Text(
-                                                text = "Tap License 10 times in a row to show all versions.",
-                                                color = themeAccent.copy(alpha = 0.72f),
-                                                style = MaterialTheme.typography.bodySmall
-                                            )
-                                        }
-
                                         if (licenseExpanded) {
                                             Text(
                                                 text = "Released into the public domain under the Unlicense. There is no warranty.",
@@ -2184,7 +2176,7 @@ data class InstalledVersion(
     val label: String,
     val file: File,
     val copyright: String? = null,
-    val isPublicDomain: Boolean = true
+    val isPublicDomain: Boolean = false
 )
 data class FontOption(val key: String, val label: String, val family: FontFamily)
 data class BibleSource(
@@ -2206,7 +2198,7 @@ data class RemoteVersion(
     val sizeBytes: Long,
     val displayNameOverride: String? = null,
     val copyright: String? = null,
-    val isPublicDomain: Boolean = true
+    val isPublicDomain: Boolean = false
 ) {
     val displayName: String = displayNameOverride ?: "${source.label}: ${displayNameFromPath(path)}"
     val sizeMb: String = String.format("%.1f", sizeBytes / 1024.0 / 1024.0)
@@ -2515,6 +2507,8 @@ private class BibleRepository(private val context: Context) {
         if (event != XmlPullParser.START_TAG) return null
         if (parser.name != "bible") return null
         return parser.getAttributeValue(null, "copyright")
+            ?: parser.getAttributeValue(null, "status")
+            ?: parser.getAttributeValue(null, "info")
     }
 
     private fun xmlBibleNameFromInput(input: java.io.InputStream): String? {
