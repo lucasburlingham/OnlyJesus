@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.widget.NumberPicker
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -61,6 +62,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -83,7 +85,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
-private const val CONTENT_BOTTOM_PADDING = 148
+private const val CONTENT_BOTTOM_PADDING = 96
 private val MenuBackgroundColor = Color(0xFF111111)
 private val MenuTextColor = Color(0xFFE8E6E3)
 private val ThemeAccentOptions = listOf(
@@ -240,9 +242,6 @@ private fun ReaderScreen(context: Context) {
     var isBusy by remember { mutableStateOf(false) }
     var installedExpanded by remember { mutableStateOf(false) }
     var remoteExpanded by remember { mutableStateOf(false) }
-    var bookExpanded by remember { mutableStateOf(false) }
-    var chapterExpanded by remember { mutableStateOf(false) }
-    var verseExpanded by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val verses = remember { mutableStateListOf<Verse>() }
     val verseListState = rememberLazyListState()
@@ -391,9 +390,9 @@ private fun ReaderScreen(context: Context) {
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 12.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
                     .padding(bottom = CONTENT_BOTTOM_PADDING.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -444,130 +443,66 @@ private fun ReaderScreen(context: Context) {
                             ) {
                                 Column(
                                     modifier = Modifier.fillMaxSize(),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button(
-                                            enabled = !isBusy && selectedVersion != null,
-                                            onClick = { navigateChapter(-1) },
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = themeHighlight,
-                                                contentColor = themeAccent
-                                            ),
-                                            border = BorderStroke(1.dp, themeBorder)
-                                        ) { Text("Prev") }
-
-                                        Button(
-                                            enabled = !isBusy && selectedVersion != null,
-                                            onClick = { navigateChapter(1) },
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = themeHighlight,
-                                                contentColor = themeAccent
-                                            ),
-                                            border = BorderStroke(1.dp, themeBorder)
-                                        ) { Text("Next") }
-
-                                        Text(
-                                            text = scriptureReference(),
-                                            modifier = Modifier.padding(top = 10.dp)
-                                        )
-                                    }
-
                                     Row(
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        modifier = Modifier.fillMaxWidth()
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 2.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        TextButton(
-                                            enabled = availableBooks.isNotEmpty(),
-                                            onClick = { bookExpanded = true },
-                                            modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
-                                        ) {
-                                            Text("B: ${bookName(currentBook)}", color = themeAccent)
-                                        }
-                                        DropdownMenu(
-                                            expanded = bookExpanded,
-                                            onDismissRequest = { bookExpanded = false },
-                                            containerColor = MenuBackgroundColor
-                                        ) {
-                                            availableBooks.forEach { book ->
-                                                DropdownMenuItem(
-                                                    text = { Text(bookName(book), color = MenuTextColor) },
-                                                    onClick = {
-                                                        bookExpanded = false
-                                                        currentBook = book
+                                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text("Book", color = themeAccent.copy(alpha = 0.78f), style = MaterialTheme.typography.bodySmall)
+                                            ReferenceWheelPicker(
+                                                values = availableBooks.map { bookName(it) },
+                                                selectedIndex = availableBooks.indexOf(currentBook).takeIf { it >= 0 } ?: 0,
+                                                enabled = !isBusy && availableBooks.isNotEmpty(),
+                                                accent = themeAccent,
+                                                highlight = themeHighlight,
+                                                border = themeBorder,
+                                                onSelected = { index ->
+                                                    val selectedBook = availableBooks.getOrNull(index) ?: return@ReferenceWheelPicker
+                                                    if (selectedBook != currentBook) {
+                                                        currentBook = selectedBook
                                                         currentChapter = 1
                                                         currentVerse = 1
                                                         loadChapter()
                                                     }
-                                                )
-                                            }
+                                                }
+                                            )
                                         }
-
-                                        TextButton(
-                                            enabled = availableChapters.isNotEmpty(),
-                                            onClick = { chapterExpanded = true },
-                                            modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
-                                        ) {
-                                            Text("Ch: $currentChapter", color = themeAccent)
-                                        }
-                                        DropdownMenu(
-                                            expanded = chapterExpanded,
-                                            onDismissRequest = { chapterExpanded = false },
-                                            containerColor = MenuBackgroundColor
-                                        ) {
-                                            availableChapters.forEach { chapter ->
-                                                DropdownMenuItem(
-                                                    text = { Text("Chapter $chapter", color = MenuTextColor) },
-                                                    onClick = {
-                                                        chapterExpanded = false
-                                                        currentChapter = chapter
+                                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text("Chapter", color = themeAccent.copy(alpha = 0.78f), style = MaterialTheme.typography.bodySmall)
+                                            ReferenceWheelPicker(
+                                                values = availableChapters.map { it.toString() },
+                                                selectedIndex = availableChapters.indexOf(currentChapter).takeIf { it >= 0 } ?: 0,
+                                                enabled = !isBusy && availableChapters.isNotEmpty(),
+                                                accent = themeAccent,
+                                                highlight = themeHighlight,
+                                                border = themeBorder,
+                                                onSelected = { index ->
+                                                    val selectedChapter = availableChapters.getOrNull(index) ?: return@ReferenceWheelPicker
+                                                    if (selectedChapter != currentChapter) {
+                                                        currentChapter = selectedChapter
                                                         currentVerse = 1
                                                         loadChapter()
                                                     }
-                                                )
-                                            }
-                                        }
-
-                                        TextButton(
-                                            enabled = availableVerses.isNotEmpty(),
-                                            onClick = { verseExpanded = true },
-                                            modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
-                                        ) {
-                                            Text("V: $currentVerse", color = themeAccent)
-                                        }
-                                        DropdownMenu(
-                                            expanded = verseExpanded,
-                                            onDismissRequest = { verseExpanded = false },
-                                            containerColor = MenuBackgroundColor
-                                        ) {
-                                            availableVerses.forEach { verse ->
-                                                DropdownMenuItem(
-                                                    text = { Text("Verse $verse", color = MenuTextColor) },
-                                                    onClick = {
-                                                        verseExpanded = false
-                                                        currentVerse = verse
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(themeHighlight, RoundedCornerShape(10.dp))
-                                            .padding(horizontal = 10.dp, vertical = 8.dp)
-                                    ) {
-                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                            Text(
-                                                text = bookName(currentBook),
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = themeAccent
+                                                }
                                             )
-                                            Text(
-                                                text = "Chapter $currentChapter",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = themeAccent.copy(alpha = 0.78f)
+                                        }
+                                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text("Verse", color = themeAccent.copy(alpha = 0.78f), style = MaterialTheme.typography.bodySmall)
+                                            ReferenceWheelPicker(
+                                                values = availableVerses.map { it.toString() },
+                                                selectedIndex = availableVerses.indexOf(currentVerse).takeIf { it >= 0 } ?: 0,
+                                                enabled = !isBusy && availableVerses.isNotEmpty(),
+                                                accent = themeAccent,
+                                                highlight = themeHighlight,
+                                                border = themeBorder,
+                                                onSelected = { index ->
+                                                    val selectedVerse = availableVerses.getOrNull(index) ?: return@ReferenceWheelPicker
+                                                    currentVerse = selectedVerse
+                                                }
                                             )
                                         }
                                     }
@@ -575,7 +510,7 @@ private fun ReaderScreen(context: Context) {
                                     LazyColumn(
                                         modifier = Modifier.fillMaxSize(),
                                         state = verseListState,
-                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         items(verses) { verse ->
                                             var verseMenuExpanded by remember(verse.number, verse.text) { mutableStateOf(false) }
@@ -996,6 +931,56 @@ private fun ReaderScreen(context: Context) {
             }
         }
     }
+}
+
+@Composable
+private fun ReferenceWheelPicker(
+    values: List<String>,
+    selectedIndex: Int,
+    enabled: Boolean,
+    accent: Color,
+    highlight: Color,
+    border: Color,
+    onSelected: (Int) -> Unit,
+) {
+    val callbackSuppressed = remember { mutableStateOf(false) }
+    val wheelHeight = 176.dp
+
+    AndroidView(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(wheelHeight)
+            .border(1.dp, border, RoundedCornerShape(14.dp))
+            .background(highlight, RoundedCornerShape(14.dp)),
+        factory = { context ->
+            NumberPicker(context).apply {
+                descendantFocusability = NumberPicker.FOCUS_BLOCK_DESCENDANTS
+                wrapSelectorWheel = false
+                setOnValueChangedListener { _, _, newVal ->
+                    if (!callbackSuppressed.value) {
+                        onSelected(newVal)
+                    }
+                }
+            }
+        },
+        update = { picker ->
+            val displayValues = if (values.isNotEmpty()) values.toTypedArray() else arrayOf("-")
+            val clampedIndex = selectedIndex.coerceIn(0, displayValues.lastIndex)
+
+            callbackSuppressed.value = true
+            picker.minValue = 0
+            picker.maxValue = displayValues.lastIndex
+            if (picker.displayedValues == null || !picker.displayedValues!!.contentEquals(displayValues)) {
+                picker.displayedValues = null
+                picker.displayedValues = displayValues
+            }
+            if (picker.value != clampedIndex) {
+                picker.value = clampedIndex
+            }
+            picker.isEnabled = enabled && values.isNotEmpty()
+            callbackSuppressed.value = false
+        }
+    )
 }
 
 @Composable
