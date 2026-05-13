@@ -7,8 +7,12 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -84,6 +88,7 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import android.graphics.Typeface
 
 private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
 private const val CONTENT_BOTTOM_PADDING = 96
@@ -250,7 +255,6 @@ private fun ReaderScreen(context: Context) {
     var remoteExpanded by remember { mutableStateOf(false) }
     var referencePickerExpanded by remember { mutableStateOf(false) }
     var referencePickerStage by remember { mutableStateOf(ReferencePickerStage.Book) }
-    var chapterPickerBook by remember { mutableStateOf(1) }
     var searchQuery by remember { mutableStateOf("") }
     val verses = remember { mutableStateListOf<Verse>() }
     val verseListState = rememberLazyListState()
@@ -260,13 +264,27 @@ private fun ReaderScreen(context: Context) {
     val searchResults = remember { mutableStateListOf<VerseSearchHit>() }
     val installedVersions = remember { mutableStateListOf<InstalledVersion>() }
     val remoteVersions = remember { mutableStateListOf<RemoteVersion>() }
+    val fontOptions = remember { mutableStateListOf<FontOption>() }
     val settingsScrollState = rememberScrollState()
 
-    fun selectedFontFamily(): FontFamily = when (fontFamilyKey) {
-        "sans" -> FontFamily.SansSerif
-        "mono" -> FontFamily.Monospace
-        else -> FontFamily.Serif
+    fun refreshFonts() {
+        fontOptions.clear()
+        fontOptions.addAll(repository.installedFonts())
     }
+
+    val importFontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            isBusy = true
+            val importedFont = withContext(Dispatchers.IO) { repository.importFont(uri) }
+            refreshFonts()
+            fontFamilyKey = importedFont.key
+            scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
+            isBusy = false
+        }
+    }
+
+    fun selectedFontFamily(): FontFamily = fontOptions.firstOrNull { it.key == fontFamilyKey }?.family ?: FontFamily.Serif
 
     @Composable
     fun selectedThemeColor(): Color {
@@ -315,7 +333,6 @@ private fun ReaderScreen(context: Context) {
             availableChapters.addAll(chapterLoad.chapters)
             availableVerses.clear()
             availableVerses.addAll(chapterLoad.verses)
-            chapterPickerBook = chapterLoad.book
             verses.clear()
             verses.addAll(chapterLoad.chapterText)
             status = if (chapterLoad.chapterText.isEmpty()) {
@@ -353,6 +370,11 @@ private fun ReaderScreen(context: Context) {
         useAndroidPrimaryTheme = saved.useAndroidPrimaryTheme
 
         refreshInstalled()
+        refreshFonts()
+
+        if (fontOptions.none { it.key == fontFamilyKey }) {
+            fontFamilyKey = fontOptions.firstOrNull()?.key ?: "serif"
+        }
 
         selectedVersion = installedVersions.firstOrNull {
             it.file.absolutePath == saved.versionPath
@@ -495,28 +517,23 @@ private fun ReaderScreen(context: Context) {
                                                     .padding(10.dp)
                                             ) {
                                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        Text(
-                                                            text = if (referencePickerStage == ReferencePickerStage.Book) "Books" else "Chapters",
-                                                            style = MaterialTheme.typography.titleSmall,
-                                                            color = themeAccent
-                                                        )
-                                                        TextButton(onClick = {
-                                                            if (referencePickerStage == ReferencePickerStage.Chapter) {
-                                                                referencePickerStage = ReferencePickerStage.Book
-                                                            } else {
-                                                                referencePickerExpanded = false
-                                                            }
-                                                        }) {
-                                                            Text(
-                                                                text = if (referencePickerStage == ReferencePickerStage.Chapter) "Back" else "Close",
-                                                                color = themeAccent
-                                                            )
-                                                        }
+                                                            Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.End,
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                TextButton(onClick = {
+                                                                    if (referencePickerStage == ReferencePickerStage.Chapter) {
+                                                                        referencePickerStage = ReferencePickerStage.Book
+                                                                    } else {
+                                                                        referencePickerExpanded = false
+                                                                    }
+                                                                }) {
+                                                                    Text(
+                                                                        text = if (referencePickerStage == ReferencePickerStage.Chapter) "Back" else "Close",
+                                                                        color = themeAccent
+                                                                    )
+                                                                }
                                                     }
 
                                                     if (referencePickerStage == ReferencePickerStage.Book) {
@@ -568,52 +585,44 @@ private fun ReaderScreen(context: Context) {
                                                             color = themeAccent,
                                                             style = MaterialTheme.typography.bodyMedium
                                                         )
-                                                        if (chapterPickerBook != currentBook) {
-                                                            Text(
-                                                                text = "Loading chapters...",
-                                                                color = themeAccent.copy(alpha = 0.78f),
-                                                                style = MaterialTheme.typography.bodySmall
-                                                            )
-                                                        } else {
-                                                            Text(
-                                                                text = "Choose a chapter",
-                                                                color = themeAccent.copy(alpha = 0.78f),
-                                                                style = MaterialTheme.typography.bodySmall
-                                                            )
-                                                            LazyVerticalGrid(
-                                                                columns = GridCells.Fixed(6),
-                                                                modifier = Modifier.height(220.dp),
-                                                                contentPadding = PaddingValues(4.dp),
-                                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                                                            ) {
-                                                                items(availableChapters.size) { index ->
-                                                                    val chapter = availableChapters[index]
-                                                                    val selected = chapter == currentChapter
-                                                                    TextButton(
-                                                                        onClick = {
-                                                                            currentChapter = chapter
-                                                                            currentVerse = 1
-                                                                            referencePickerExpanded = false
-                                                                            loadChapter()
-                                                                        },
-                                                                        colors = ButtonDefaults.textButtonColors(
-                                                                            contentColor = if (selected) themeAccent else themeAccent.copy(alpha = 0.78f)
-                                                                        ),
-                                                                        modifier = Modifier
-                                                                            .fillMaxWidth()
-                                                                            .background(
-                                                                                if (selected) themeAccentBackground(themeAccent) else Color.Transparent,
-                                                                                RoundedCornerShape(8.dp)
-                                                                            )
-                                                                            .border(
-                                                                                1.dp,
-                                                                                if (selected) themeBorder else Color.Transparent,
-                                                                                RoundedCornerShape(8.dp)
-                                                                            )
-                                                                    ) {
-                                                                        Text(chapter.toString(), style = MaterialTheme.typography.bodyMedium)
-                                                                    }
+                                                        Text(
+                                                            text = "Choose a chapter",
+                                                            color = themeAccent.copy(alpha = 0.78f),
+                                                            style = MaterialTheme.typography.bodySmall
+                                                        )
+                                                        LazyVerticalGrid(
+                                                            columns = GridCells.Fixed(6),
+                                                            modifier = Modifier.height(220.dp),
+                                                            contentPadding = PaddingValues(4.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                        ) {
+                                                            items(availableChapters.size) { index ->
+                                                                val chapter = availableChapters[index]
+                                                                val selected = chapter == currentChapter
+                                                                TextButton(
+                                                                    onClick = {
+                                                                        currentChapter = chapter
+                                                                        currentVerse = 1
+                                                                        referencePickerExpanded = false
+                                                                        loadChapter()
+                                                                    },
+                                                                    colors = ButtonDefaults.textButtonColors(
+                                                                        contentColor = if (selected) themeAccent else themeAccent.copy(alpha = 0.78f)
+                                                                    ),
+                                                                    modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .background(
+                                                                            if (selected) themeAccentBackground(themeAccent) else Color.Transparent,
+                                                                            RoundedCornerShape(8.dp)
+                                                                        )
+                                                                        .border(
+                                                                            1.dp,
+                                                                            if (selected) themeBorder else Color.Transparent,
+                                                                            RoundedCornerShape(8.dp)
+                                                                        )
+                                                                ) {
+                                                                    Text(chapter.toString(), style = MaterialTheme.typography.bodyMedium)
                                                                 }
                                                             }
                                                         }
@@ -632,7 +641,7 @@ private fun ReaderScreen(context: Context) {
                                             var verseMenuExpanded by remember(verse.number, verse.text) { mutableStateOf(false) }
                                             val verseText = "${bookName(currentBook)} $currentChapter:${verse.number} ${verse.text}"
                                             val verseDisplay = buildAnnotatedString {
-                                                withStyle(SpanStyle(color = if (verse.number == currentVerse) themeMuted else Color(0xFFE8E6E3).copy(alpha = 0.5f))) {
+                                                withStyle(SpanStyle(color = if (verse.number == currentVerse) themeMuted else Color(0xFFE8E6E3).copy(alpha = 0.25f))) {
                                                     append("${verse.number}.")
                                                 }
                                                 append(" ")
@@ -941,23 +950,38 @@ private fun ReaderScreen(context: Context) {
                                                     .border(1.dp, themeBorder, RoundedCornerShape(8.dp))
                                                     .background(themeHighlight, RoundedCornerShape(8.dp))
                                             ) {
-                                                Text("${fontFamilyLabel(fontFamilyKey)} ▼", color = themeAccent)
+                                                Text("${fontFamilyLabel(fontFamilyKey, fontOptions)} ▼", color = themeAccent)
                                             }
                                             DropdownMenu(
                                                 expanded = fontFamilyExpanded,
                                                 onDismissRequest = { fontFamilyExpanded = false },
                                                 containerColor = MenuBackgroundColor
                                             ) {
-                                                listOf("serif", "sans", "mono").forEach { family ->
+                                                fontOptions.forEach { option ->
                                                     DropdownMenuItem(
-                                                        text = { Text(fontFamilyLabel(family), color = MenuTextColor) },
+                                                        text = { Text(option.label, color = MenuTextColor) },
                                                         onClick = {
                                                             fontFamilyExpanded = false
-                                                            fontFamilyKey = family
+                                                            fontFamilyKey = option.key
                                                             scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
                                                         }
                                                     )
                                                 }
+                                                DropdownMenuItem(
+                                                    text = { Text("Add font from file…", color = MenuTextColor) },
+                                                    onClick = {
+                                                        fontFamilyExpanded = false
+                                                        importFontLauncher.launch(
+                                                            arrayOf(
+                                                                "font/*",
+                                                                "application/x-font-ttf",
+                                                                "application/x-font-otf",
+                                                                "application/octet-stream",
+                                                                "*/*"
+                                                            )
+                                                        )
+                                                    }
+                                                )
                                             }
                                         }
 
@@ -1078,6 +1102,7 @@ private data class ChapterLoad(
 )
 data class ChapterLocation(val book: Int, val chapter: Int)
 data class InstalledVersion(val label: String, val file: File)
+data class FontOption(val key: String, val label: String, val family: FontFamily)
 data class BibleSource(val owner: String, val repo: String, val branch: String) {
     val key: String = "${owner}_${repo}_$branch"
     val label: String = "$owner/$repo"
@@ -1153,6 +1178,44 @@ private class ReaderPreferencesStore(private val context: Context) {
 
 private class BibleRepository(private val context: Context) {
     private val versionsDir: File = File(context.filesDir, "versions").apply { mkdirs() }
+    private val fontsDir: File = File(context.filesDir, "fonts").apply { mkdirs() }
+
+    fun installedFonts(): List<FontOption> {
+        val builtIns = listOf(
+            FontOption("serif", "Serif", FontFamily.Serif),
+            FontOption("sans", "Sans", FontFamily.SansSerif),
+            FontOption("mono", "Mono", FontFamily.Monospace)
+        )
+
+        val imported = fontsDir.listFiles()
+            ?.filter { it.isFile && isFontFile(it) }
+            ?.sortedBy { it.name.lowercase() }
+            ?.map { file ->
+                FontOption(
+                    key = customFontKey(file.name),
+                    label = fontLabelFromFileName(file.name),
+                    family = FontFamily(Typeface.createFromFile(file))
+                )
+            }
+            .orEmpty()
+
+        return builtIns + imported
+    }
+
+    suspend fun importFont(uri: Uri): FontOption = withContext(Dispatchers.IO) {
+        val displayName = queryDisplayName(uri) ?: "custom-font"
+        val targetName = normalizeFontFileName(displayName)
+        val target = File(fontsDir, targetName)
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        } ?: error("Unable to open font file")
+
+        FontOption(
+            key = customFontKey(target.name),
+            label = fontLabelFromFileName(target.name),
+            family = FontFamily(Typeface.createFromFile(target))
+        )
+    }
 
     fun installedVersions(): List<InstalledVersion> = versionsDir
         .walkTopDown()
@@ -1214,6 +1277,41 @@ private class BibleRepository(private val context: Context) {
         val sourceKey = file.parentFile?.name ?: return null
         return BibleSources.firstOrNull { it.key == sourceKey }?.label
     }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (nameIndex >= 0 && cursor.moveToFirst()) {
+                return cursor.getString(nameIndex)
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/')
+    }
+
+    private fun isFontFile(file: File): Boolean {
+        val extension = file.extension.lowercase()
+        return extension == "ttf" || extension == "otf" || extension == "ttc"
+    }
+
+    private fun customFontKey(fileName: String): String = "custom:$fileName"
+
+    private fun normalizeFontFileName(fileName: String): String {
+        val sanitized = fileName
+            .trim()
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .ifBlank { "custom-font" }
+        return if (sanitized.contains('.')) sanitized else "$sanitized.ttf"
+    }
+
+    private fun fontLabelFromFileName(fileName: String): String = fileName
+        .substringBeforeLast('.')
+        .replace('_', ' ')
+        .replace('-', ' ')
+        .trim()
+        .split(" ")
+        .filter { it.isNotBlank() }
+        .joinToString(" ") { token -> token.replaceFirstChar { c -> c.uppercase() } }
+        .ifBlank { "Custom Font" }
 
     private fun downloadFile(url: String, file: File) {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -1346,10 +1444,11 @@ fun displayNameFromPath(path: String): String {
         .ifBlank { "Bible" }
 }
 
-private fun fontFamilyLabel(key: String): String = when (key) {
+private fun fontFamilyLabel(key: String, options: List<FontOption> = emptyList()): String = when (key) {
     "sans" -> "Sans"
     "mono" -> "Mono"
-    else -> "Serif"
+    "serif" -> "Serif"
+    else -> options.firstOrNull { it.key == key }?.label ?: key.removePrefix("custom:").substringBeforeLast('.').ifBlank { "Custom Font" }
 }
 
 private fun bookName(bookNumber: Int): String = BibleBookNames.getOrNull(bookNumber - 1) ?: "Book $bookNumber"
