@@ -20,6 +20,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
@@ -50,12 +51,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.animation.animateContentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -63,6 +66,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -89,6 +93,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import android.graphics.Typeface
+import kotlin.math.abs
 
 private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
 private const val CONTENT_BOTTOM_PADDING = 96
@@ -256,6 +261,7 @@ private fun ReaderScreen(context: Context) {
     var referencePickerExpanded by remember { mutableStateOf(false) }
     var referencePickerStage by remember { mutableStateOf(ReferencePickerStage.Book) }
     var searchQuery by remember { mutableStateOf("") }
+    var licenseExpanded by remember { mutableStateOf(false) }
     val verses = remember { mutableStateListOf<Verse>() }
     val verseListState = rememberLazyListState()
     val availableBooks = remember { mutableStateListOf<Int>() }
@@ -266,6 +272,31 @@ private fun ReaderScreen(context: Context) {
     val remoteVersions = remember { mutableStateListOf<RemoteVersion>() }
     val fontOptions = remember { mutableStateListOf<FontOption>() }
     val settingsScrollState = rememberScrollState()
+    var previousChapterPreview by remember { mutableStateOf<ChapterLoad?>(null) }
+    var nextChapterPreview by remember { mutableStateOf<ChapterLoad?>(null) }
+    var swipeOffsetPx by remember { mutableFloatStateOf(0f) }
+    var swipeSettledOffsetPx by remember { mutableFloatStateOf(0f) }
+    var isDraggingChapter by remember { mutableStateOf(false) }
+
+    suspend fun loadChapterData(book: Int, chapter: Int, verse: Int = 1): ChapterLoad? = withContext(Dispatchers.IO) {
+        val version = selectedVersion ?: return@withContext null
+        val books = reader.availableBooks(version.file)
+        val normalizedBook = books.firstOrNull { it == book } ?: books.firstOrNull() ?: return@withContext null
+        val chapters = reader.availableChapters(version.file, normalizedBook)
+        val normalizedChapter = chapters.firstOrNull { it == chapter } ?: chapters.firstOrNull() ?: return@withContext null
+        val chapterText = reader.readChapter(version.file, normalizedBook, normalizedChapter)
+        val verseNumbers = chapterText.map { it.number }
+        val normalizedVerse = verseNumbers.firstOrNull { it == verse } ?: verseNumbers.firstOrNull() ?: 1
+        ChapterLoad(
+            book = normalizedBook,
+            chapter = normalizedChapter,
+            verse = normalizedVerse,
+            books = books,
+            chapters = chapters,
+            verses = verseNumbers,
+            chapterText = chapterText
+        )
+    }
 
     fun refreshFonts() {
         fontOptions.clear()
@@ -306,23 +337,9 @@ private fun ReaderScreen(context: Context) {
         val version = selectedVersion ?: return
         scope.launch {
             isBusy = true
-            val chapterLoad = withContext(Dispatchers.IO) {
-                val books = reader.availableBooks(version.file)
-                val normalizedBook = books.firstOrNull { it == currentBook } ?: books.firstOrNull() ?: 1
-                val chapters = reader.availableChapters(version.file, normalizedBook)
-                val normalizedChapter = chapters.firstOrNull { it == currentChapter } ?: chapters.firstOrNull() ?: 1
-                val chapterText = reader.readChapter(version.file, normalizedBook, normalizedChapter)
-                val verseNumbers = chapterText.map { it.number }
-                val normalizedVerse = verseNumbers.firstOrNull { it == currentVerse } ?: verseNumbers.firstOrNull() ?: 1
-                ChapterLoad(
-                    book = normalizedBook,
-                    chapter = normalizedChapter,
-                    verse = normalizedVerse,
-                    books = books,
-                    chapters = chapters,
-                    verses = verseNumbers,
-                    chapterText = chapterText
-                )
+            val chapterLoad = loadChapterData(currentBook, currentChapter, currentVerse) ?: run {
+                isBusy = false
+                return@launch
             }
             currentBook = chapterLoad.book
             currentChapter = chapterLoad.chapter
@@ -341,6 +358,17 @@ private fun ReaderScreen(context: Context) {
                 ""
             }
             prefs.savePosition(currentBook, currentChapter)
+            val adjacentPreviews = withContext(Dispatchers.IO) {
+                val previous = reader.findAdjacent(version.file, currentBook, currentChapter, -1)?.let {
+                    loadChapterData(it.book, it.chapter, 1)
+                }
+                val next = reader.findAdjacent(version.file, currentBook, currentChapter, 1)?.let {
+                    loadChapterData(it.book, it.chapter, 1)
+                }
+                previous to next
+            }
+            previousChapterPreview = adjacentPreviews.first
+            nextChapterPreview = adjacentPreviews.second
             isBusy = false
         }
     }
@@ -384,6 +412,27 @@ private fun ReaderScreen(context: Context) {
             prefs.saveVersion(it.file.absolutePath, it.label)
             loadChapter()
         }
+    }
+
+    LaunchedEffect(currentPage, selectedVersion, currentBook, currentChapter) {
+        if (currentPage != ReaderPage.Scripture || selectedVersion == null) {
+            previousChapterPreview = null
+            nextChapterPreview = null
+            return@LaunchedEffect
+        }
+        val version = selectedVersion ?: return@LaunchedEffect
+        val previousPreview = withContext(Dispatchers.IO) {
+            reader.findAdjacent(version.file, currentBook, currentChapter, -1)?.let {
+                loadChapterData(it.book, it.chapter, 1)
+            }
+        }
+        val nextPreview = withContext(Dispatchers.IO) {
+            reader.findAdjacent(version.file, currentBook, currentChapter, 1)?.let {
+                loadChapterData(it.book, it.chapter, 1)
+            }
+        }
+        previousChapterPreview = previousPreview
+        nextChapterPreview = nextPreview
     }
 
     LaunchedEffect(currentPage, currentBook, currentChapter, currentVerse, verses) {
@@ -448,36 +497,109 @@ private fun ReaderScreen(context: Context) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     when (currentPage) {
                         ReaderPage.Scripture -> {
-                            Box(
+                            BoxWithConstraints(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .pointerInput(currentPage, selectedVersion, currentBook, currentChapter, isBusy) {
-                                        var dragDistance = 0f
-                                        detectHorizontalDragGestures(
-                                            onHorizontalDrag = { _, dragAmount ->
-                                                dragDistance += dragAmount
-                                            },
-                                            onDragEnd = {
-                                                if (!isBusy && selectedVersion != null) {
-                                                    if (dragDistance <= -120f) {
-                                                        navigateChapter(1)
-                                                    } else if (dragDistance >= 120f) {
-                                                        navigateChapter(-1)
+                            ) {
+                                val density = androidx.compose.ui.platform.LocalDensity.current
+                                val widthPx = with(density) { maxWidth.toPx() }
+                                val previewAlpha = if (widthPx <= 0f) 0f else (abs(swipeOffsetPx) / widthPx).coerceIn(0f, 1f)
+
+                                val displayedOffsetPx = if (isDraggingChapter) swipeOffsetPx else androidx.compose.animation.core.animateFloatAsState(
+                                    targetValue = swipeSettledOffsetPx,
+                                    animationSpec = androidx.compose.animation.core.spring(stiffness = androidx.compose.animation.core.Spring.StiffnessLow),
+                                    label = "chapterSwipeSettled"
+                                ).value
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .pointerInput(currentPage, selectedVersion, currentBook, currentChapter, isBusy, widthPx) {
+                                            detectHorizontalDragGestures(
+                                                onHorizontalDrag = { change, dragAmount ->
+                                                    change.consume()
+                                                    if (widthPx <= 0f) return@detectHorizontalDragGestures
+                                                    isDraggingChapter = true
+                                                    swipeOffsetPx = (swipeOffsetPx + dragAmount).coerceIn(-widthPx, widthPx)
+                                                },
+                                                onDragEnd = {
+                                                    val threshold = widthPx * 0.22f
+                                                    val direction = when {
+                                                        swipeOffsetPx <= -threshold -> 1
+                                                        swipeOffsetPx >= threshold -> -1
+                                                        else -> 0
                                                     }
+                                                    if (!isBusy && selectedVersion != null && direction != 0) {
+                                                        swipeSettledOffsetPx = widthPx * direction
+                                                        scope.launch {
+                                                            kotlinx.coroutines.delay(180)
+                                                            navigateChapter(direction)
+                                                            swipeOffsetPx = 0f
+                                                            swipeSettledOffsetPx = 0f
+                                                        }
+                                                    } else {
+                                                        swipeSettledOffsetPx = 0f
+                                                        swipeOffsetPx = 0f
+                                                    }
+                                                    isDraggingChapter = false
+                                                },
+                                                onDragCancel = {
+                                                    swipeSettledOffsetPx = 0f
+                                                    swipeOffsetPx = 0f
+                                                    isDraggingChapter = false
                                                 }
-                                                dragDistance = 0f
-                                            },
-                                            onDragCancel = {
-                                                dragDistance = 0f
-                                            }
+                                            )
+                                        }
+                                        .graphicsLayer {
+                                            clip = false
+                                        }
+                                ) {
+                                    previousChapterPreview?.let { preview ->
+                                        ChapterPreviewPane(
+                                            chapterLoad = preview,
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .graphicsLayer {
+                                                    translationX = displayedOffsetPx - widthPx
+                                                    alpha = if (displayedOffsetPx > 0f) previewAlpha else 0f
+                                                },
+                                            label = "Previous chapter",
+                                            themeAccent = themeAccent,
+                                            themeMuted = themeMuted,
+                                            fontFamily = selectedFontFamily(),
+                                            fontSizeSp = fontSizeSp
                                         )
                                     }
-                            ) {
+
+                                    nextChapterPreview?.let { preview ->
+                                        ChapterPreviewPane(
+                                            chapterLoad = preview,
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .graphicsLayer {
+                                                    translationX = displayedOffsetPx + widthPx
+                                                    alpha = if (displayedOffsetPx < 0f) previewAlpha else 0f
+                                                },
+                                            label = "Next chapter",
+                                            themeAccent = themeAccent,
+                                            themeMuted = themeMuted,
+                                            fontFamily = selectedFontFamily(),
+                                            fontSizeSp = fontSizeSp
+                                        )
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .graphicsLayer {
+                                                translationX = displayedOffsetPx
+                                            }
+                                    ) {
                                 Column(
                                     modifier = Modifier.fillMaxSize(),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Box {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                         TextButton(
                                             enabled = !isBusy && selectedVersion != null,
                                             onClick = {
@@ -511,29 +633,26 @@ private fun ReaderScreen(context: Context) {
                                             Box(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .padding(top = 56.dp)
                                                     .border(1.dp, themeBorder.copy(alpha = 0.75f), RoundedCornerShape(14.dp))
                                                     .background(themeHighlight.copy(alpha = 0.22f), RoundedCornerShape(14.dp))
-                                                    .padding(10.dp)
+                                                    .padding(6.dp)
                                             ) {
-                                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                            Row(
-                                                                modifier = Modifier.fillMaxWidth(),
-                                                                horizontalArrangement = Arrangement.End,
-                                                                verticalAlignment = Alignment.CenterVertically
-                                                            ) {
-                                                                TextButton(onClick = {
-                                                                    if (referencePickerStage == ReferencePickerStage.Chapter) {
-                                                                        referencePickerStage = ReferencePickerStage.Book
-                                                                    } else {
-                                                                        referencePickerExpanded = false
-                                                                    }
-                                                                }) {
-                                                                    Text(
-                                                                        text = if (referencePickerStage == ReferencePickerStage.Chapter) "Back" else "Close",
-                                                                        color = themeAccent
-                                                                    )
-                                                                }
+                                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    if (referencePickerStage == ReferencePickerStage.Chapter) {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.End,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            TextButton(onClick = {
+                                                                referencePickerStage = ReferencePickerStage.Book
+                                                            }) {
+                                                                Text(
+                                                                    text = "Back",
+                                                                    color = themeAccent
+                                                                )
+                                                            }
+                                                        }
                                                     }
 
                                                     if (referencePickerStage == ReferencePickerStage.Book) {
@@ -545,9 +664,9 @@ private fun ReaderScreen(context: Context) {
                                                         LazyVerticalGrid(
                                                             columns = GridCells.Fixed(3),
                                                             modifier = Modifier.height(280.dp),
-                                                            contentPadding = PaddingValues(4.dp),
-                                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                            contentPadding = PaddingValues(2.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(6.dp)
                                                         ) {
                                                             items(availableBooks.size) { index ->
                                                                 val book = availableBooks[index]
@@ -593,9 +712,9 @@ private fun ReaderScreen(context: Context) {
                                                         LazyVerticalGrid(
                                                             columns = GridCells.Fixed(6),
                                                             modifier = Modifier.height(220.dp),
-                                                            contentPadding = PaddingValues(4.dp),
-                                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                            contentPadding = PaddingValues(2.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(4.dp)
                                                         ) {
                                                             items(availableChapters.size) { index ->
                                                                 val chapter = availableChapters[index]
@@ -635,7 +754,7 @@ private fun ReaderScreen(context: Context) {
                                     LazyColumn(
                                         modifier = Modifier.fillMaxSize(),
                                         state = verseListState,
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
                                         items(verses) { verse ->
                                             var verseMenuExpanded by remember(verse.number, verse.text) { mutableStateOf(false) }
@@ -663,7 +782,7 @@ private fun ReaderScreen(context: Context) {
                                                                 onLongPress = { verseMenuExpanded = true }
                                                             )
                                                         }
-                                                        .padding(horizontal = 6.dp, vertical = 8.dp)
+                                                        .padding(horizontal = 4.dp, vertical = 4.dp)
                                                 ) {
                                                     Text(
                                                         text = verseDisplay,
@@ -690,9 +809,22 @@ private fun ReaderScreen(context: Context) {
                                                             shareText(context, "${selectedVersion?.label ?: "Bible"} - ${bookName(currentBook)} $currentChapter:${verse.number}", verseText)
                                                         }
                                                     )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Open in BibleGateway", color = MenuTextColor) },
+                                                        onClick = {
+                                                            verseMenuExpanded = false
+                                                            openBibleGateway(
+                                                                context = context,
+                                                                reference = "${bookName(currentBook)} $currentChapter:${verse.number}",
+                                                                version = selectedVersion
+                                                            )
+                                                        }
+                                                    )
                                                 }
                                             }
                                         }
+                                    }
+                                }
                                     }
                                 }
                             }
@@ -787,6 +919,17 @@ private fun ReaderScreen(context: Context) {
                                                     onClick = {
                                                         resultMenuExpanded = false
                                                         shareText(context, "${selectedVersion?.label ?: "Bible"} - ${bookName(result.book)} ${result.chapter}:${result.verse}", resultText)
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Open in BibleGateway", color = MenuTextColor) },
+                                                    onClick = {
+                                                        resultMenuExpanded = false
+                                                        openBibleGateway(
+                                                            context = context,
+                                                            reference = "${bookName(result.book)} ${result.chapter}:${result.verse}",
+                                                            version = selectedVersion
+                                                        )
                                                     }
                                                 )
                                             }
@@ -1003,7 +1146,7 @@ private fun ReaderScreen(context: Context) {
                                     )
                                 }
 
-                                Text("Size: ${fontSizeSp.toInt()}sp", color = themeAccent.copy(alpha = 0.78f))
+                                Text("Size: ${fontSizeSp.toInt()}px", color = themeAccent.copy(alpha = 0.78f))
                                 Slider(
                                     value = fontSizeSp,
                                     onValueChange = {
@@ -1019,6 +1162,52 @@ private fun ReaderScreen(context: Context) {
                                         inactiveTickColor = themeAccent.copy(alpha = 0.28f)
                                     )
                                 )
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .animateContentSize()
+                                        .border(1.dp, themeBorder, RoundedCornerShape(12.dp))
+                                        .background(themeHighlight.copy(alpha = 0.18f), RoundedCornerShape(12.dp))
+                                        .padding(12.dp)
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("License", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                                            TextButton(onClick = { licenseExpanded = !licenseExpanded }) {
+                                                Text(if (licenseExpanded) "Hide" else "Show", color = themeAccent)
+                                            }
+                                        }
+
+                                        if (licenseExpanded) {
+                                            Text(
+                                                text = "Released into the public domain under the Unlicense. There is no warranty.",
+                                                color = themeAccent.copy(alpha = 0.78f)
+                                            )
+                                            Button(
+                                                onClick = {
+                                                    context.startActivity(
+                                                        Intent(
+                                                            Intent.ACTION_VIEW,
+                                                            Uri.parse("https://github.com/lucasburlingham/OnlyJesus/")
+                                                        )
+                                                    )
+                                                },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = themeHighlight,
+                                                    contentColor = themeAccent
+                                                ),
+                                                border = BorderStroke(1.dp, themeBorder)
+                                            ) {
+                                                Text("Open GitHub repo")
+                                            }
+                                        }
+                                    }
+                                }
 
                                 Text(status, color = themeAccent.copy(alpha = 0.78f))
                             }
@@ -1074,6 +1263,53 @@ private fun ReaderScreen(context: Context) {
 }
 
 private fun themeAccentBackground(accent: Color): Color = accent.copy(alpha = 0.12f)
+
+@Composable
+private fun ChapterPreviewPane(
+    chapterLoad: ChapterLoad,
+    modifier: Modifier = Modifier,
+    label: String,
+    themeAccent: Color,
+    themeMuted: Color,
+    fontFamily: FontFamily,
+    fontSizeSp: Float
+) {
+    Box(
+        modifier = modifier.background(Color.Black.copy(alpha = 0.36f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(label, color = themeAccent.copy(alpha = 0.7f), style = MaterialTheme.typography.bodySmall)
+            Text(
+                text = "${bookName(chapterLoad.book)} ${chapterLoad.chapter}",
+                color = themeAccent,
+                style = MaterialTheme.typography.titleMedium
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                chapterLoad.chapterText.take(8).forEach { verse ->
+                    val verseDisplay = buildAnnotatedString {
+                        withStyle(SpanStyle(color = themeMuted.copy(alpha = 0.55f))) {
+                            append("${verse.number}.")
+                        }
+                        append(" ")
+                        withStyle(SpanStyle(color = themeAccent.copy(alpha = 0.72f))) {
+                            append(verse.text)
+                        }
+                    }
+                    Text(
+                        text = verseDisplay,
+                        fontSize = (fontSizeSp * 0.92f).sp,
+                        fontFamily = fontFamily
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun AmoledTheme(content: @Composable () -> Unit) {
@@ -1485,4 +1721,31 @@ private fun shareText(context: Context, subject: String, text: String) {
         putExtra(Intent.EXTRA_TEXT, text)
     }
     context.startActivity(Intent.createChooser(intent, subject))
+}
+
+private fun openBibleGateway(context: Context, reference: String, version: InstalledVersion?) {
+    val versionCode = bibleGatewayVersionCode(version)
+    val url = "https://www.biblegateway.com/passage/?search=${Uri.encode(reference)}&version=${Uri.encode(versionCode)}"
+    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+}
+
+private fun bibleGatewayVersionCode(version: InstalledVersion?): String {
+    val label = version?.label.orEmpty()
+    val extracted = label.substringAfterLast(':').trim().ifBlank { version?.file?.nameWithoutExtension.orEmpty() }
+    val compact = extracted
+        .removePrefix("t_")
+        .removePrefix("t-")
+        .replace(Regex("[^A-Za-z0-9]+"), "")
+        .uppercase()
+    return when (compact) {
+        "ASV" -> "ASV"
+        "BBE" -> "BBE"
+        "ESV" -> "ESV"
+        "KJV" -> "KJV"
+        "NIV" -> "NIV"
+        "NKJV" -> "NKJV"
+        "WEB" -> "WEB"
+        "YLT" -> "YLT"
+        else -> compact.ifBlank { "NIV" }
+    }
 }
