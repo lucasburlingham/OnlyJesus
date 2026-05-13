@@ -5,17 +5,20 @@ import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -26,6 +29,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -33,7 +38,9 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,12 +56,16 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -75,6 +86,18 @@ private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
 private const val CONTENT_BOTTOM_PADDING = 148
 private val MenuBackgroundColor = Color(0xFF111111)
 private val MenuTextColor = Color(0xFFE8E6E3)
+private val ThemeAccentOptions = listOf(
+    Color(0xFF82A98E),
+    Color(0xFF74A7A0),
+    Color(0xFF7397C7),
+    Color(0xFF7B87C8),
+    Color(0xFFA17FC2),
+    Color(0xFFC07A9A),
+    Color(0xFFC77E72),
+    Color(0xFFC2A364),
+    Color(0xFF95A76C),
+    Color(0xFF7E93A6)
+)
 private val BibleSources = listOf(
     BibleSource(
         owner = "scrollmapper",
@@ -158,6 +181,15 @@ private enum class ReaderPage {
     Settings
 }
 
+@Composable
+private fun androidPrimaryThemeColor(context: Context): Color {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        androidx.compose.material3.dynamicDarkColorScheme(context).primary
+    } else {
+        Color(0xFF0A84FF)
+    }
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -200,7 +232,10 @@ private fun ReaderScreen(context: Context) {
     var currentChapter by remember { mutableStateOf(1) }
     var currentVerse by remember { mutableStateOf(1) }
     var fontFamilyKey by remember { mutableStateOf("serif") }
+    var fontFamilyExpanded by remember { mutableStateOf(false) }
     var fontSizeSp by remember { mutableStateOf(20f) }
+    var themeColorIndex by remember { mutableStateOf(0) }
+    var useAndroidPrimaryTheme by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("No offline Bible selected.") }
     var isBusy by remember { mutableStateOf(false) }
     var installedExpanded by remember { mutableStateOf(false) }
@@ -217,11 +252,21 @@ private fun ReaderScreen(context: Context) {
     val searchResults = remember { mutableStateListOf<VerseSearchHit>() }
     val installedVersions = remember { mutableStateListOf<InstalledVersion>() }
     val remoteVersions = remember { mutableStateListOf<RemoteVersion>() }
+    val settingsScrollState = rememberScrollState()
 
     fun selectedFontFamily(): FontFamily = when (fontFamilyKey) {
         "sans" -> FontFamily.SansSerif
         "mono" -> FontFamily.Monospace
         else -> FontFamily.Serif
+    }
+
+    @Composable
+    fun selectedThemeColor(): Color {
+        return if (useAndroidPrimaryTheme) {
+            androidPrimaryThemeColor(context)
+        } else {
+            ThemeAccentOptions[themeColorIndex.coerceIn(0, ThemeAccentOptions.lastIndex)]
+        }
     }
 
     fun scriptureReference(): String = "${bookName(currentBook)} $currentChapter:$currentVerse"
@@ -295,6 +340,8 @@ private fun ReaderScreen(context: Context) {
         currentChapter = saved.chapter
         fontFamilyKey = saved.fontFamily
         fontSizeSp = saved.fontSize
+        themeColorIndex = saved.themeColorIndex.coerceIn(0, ThemeAccentOptions.lastIndex)
+        useAndroidPrimaryTheme = saved.useAndroidPrimaryTheme
 
         refreshInstalled()
 
@@ -327,6 +374,11 @@ private fun ReaderScreen(context: Context) {
             }
     }
 
+    val themeAccent = selectedThemeColor()
+    val themeHighlight = themeAccent.copy(alpha = 0.14f)
+    val themeBorder = themeAccent.copy(alpha = 0.72f)
+    val themeMuted = themeAccent.copy(alpha = 0.5f)
+
     Surface(
         modifier = Modifier
             .fillMaxSize()
@@ -355,7 +407,7 @@ private fun ReaderScreen(context: Context) {
                         ) {
                             Text(
                                 text = "⚙",
-                                color = Color(0xFFE8E6E3).copy(alpha = 0.75f),
+                                color = themeAccent.copy(alpha = 0.75f),
                                 style = MaterialTheme.typography.titleLarge
                             )
                         }
@@ -395,9 +447,25 @@ private fun ReaderScreen(context: Context) {
                                     verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button(enabled = !isBusy && selectedVersion != null, onClick = { navigateChapter(-1) }) { Text("Prev") }
+                                        Button(
+                                            enabled = !isBusy && selectedVersion != null,
+                                            onClick = { navigateChapter(-1) },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = themeHighlight,
+                                                contentColor = themeAccent
+                                            ),
+                                            border = BorderStroke(1.dp, themeBorder)
+                                        ) { Text("Prev") }
 
-                                        Button(enabled = !isBusy && selectedVersion != null, onClick = { navigateChapter(1) }) { Text("Next") }
+                                        Button(
+                                            enabled = !isBusy && selectedVersion != null,
+                                            onClick = { navigateChapter(1) },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = themeHighlight,
+                                                contentColor = themeAccent
+                                            ),
+                                            border = BorderStroke(1.dp, themeBorder)
+                                        ) { Text("Next") }
 
                                         Text(
                                             text = scriptureReference(),
@@ -409,8 +477,12 @@ private fun ReaderScreen(context: Context) {
                                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        TextButton(enabled = availableBooks.isNotEmpty(), onClick = { bookExpanded = true }) {
-                                            Text("B: ${bookName(currentBook)}")
+                                        TextButton(
+                                            enabled = availableBooks.isNotEmpty(),
+                                            onClick = { bookExpanded = true },
+                                            modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
+                                        ) {
+                                            Text("B: ${bookName(currentBook)}", color = themeAccent)
                                         }
                                         DropdownMenu(
                                             expanded = bookExpanded,
@@ -431,8 +503,12 @@ private fun ReaderScreen(context: Context) {
                                             }
                                         }
 
-                                        TextButton(enabled = availableChapters.isNotEmpty(), onClick = { chapterExpanded = true }) {
-                                            Text("Ch: $currentChapter")
+                                        TextButton(
+                                            enabled = availableChapters.isNotEmpty(),
+                                            onClick = { chapterExpanded = true },
+                                            modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
+                                        ) {
+                                            Text("Ch: $currentChapter", color = themeAccent)
                                         }
                                         DropdownMenu(
                                             expanded = chapterExpanded,
@@ -452,8 +528,12 @@ private fun ReaderScreen(context: Context) {
                                             }
                                         }
 
-                                        TextButton(enabled = availableVerses.isNotEmpty(), onClick = { verseExpanded = true }) {
-                                            Text("V: $currentVerse")
+                                        TextButton(
+                                            enabled = availableVerses.isNotEmpty(),
+                                            onClick = { verseExpanded = true },
+                                            modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
+                                        ) {
+                                            Text("V: $currentVerse", color = themeAccent)
                                         }
                                         DropdownMenu(
                                             expanded = verseExpanded,
@@ -472,7 +552,25 @@ private fun ReaderScreen(context: Context) {
                                         }
                                     }
 
-                                    Text(scriptureReference(), color = Color(0xFF9DB7A6))
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(themeHighlight, RoundedCornerShape(10.dp))
+                                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                                    ) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(
+                                                text = bookName(currentBook),
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = themeAccent
+                                            )
+                                            Text(
+                                                text = "Chapter $currentChapter",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = themeAccent.copy(alpha = 0.78f)
+                                            )
+                                        }
+                                    }
 
                                     LazyColumn(
                                         modifier = Modifier.fillMaxSize(),
@@ -482,12 +580,21 @@ private fun ReaderScreen(context: Context) {
                                         items(verses) { verse ->
                                             var verseMenuExpanded by remember(verse.number, verse.text) { mutableStateOf(false) }
                                             val verseText = "${bookName(currentBook)} $currentChapter:${verse.number} ${verse.text}"
+                                            val verseDisplay = buildAnnotatedString {
+                                                withStyle(SpanStyle(color = if (verse.number == currentVerse) themeMuted else Color(0xFFE8E6E3).copy(alpha = 0.5f))) {
+                                                    append("${verse.number}.")
+                                                }
+                                                append(" ")
+                                                withStyle(SpanStyle(color = if (verse.number == currentVerse) themeAccent else Color(0xFFE8E6E3))) {
+                                                    append(verse.text)
+                                                }
+                                            }
                                             Box(modifier = Modifier.fillMaxWidth()) {
                                                 Box(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
                                                         .background(
-                                                            color = if (verse.number == currentVerse) Color(0xFF132018) else Color.Transparent,
+                                                            color = if (verse.number == currentVerse) themeHighlight else Color.Transparent,
                                                             shape = RoundedCornerShape(8.dp)
                                                         )
                                                         .pointerInput(verse.number, verse.text) {
@@ -499,8 +606,7 @@ private fun ReaderScreen(context: Context) {
                                                         .padding(horizontal = 6.dp, vertical = 8.dp)
                                                 ) {
                                                     Text(
-                                                        text = "${verse.number}. ${verse.text}",
-                                                        color = if (verse.number == currentVerse) Color(0xFFCAE6D0) else Color(0xFFE8E6E3),
+                                                        text = verseDisplay,
                                                         fontSize = fontSizeSp.sp,
                                                         fontFamily = selectedFontFamily()
                                                     )
@@ -539,7 +645,7 @@ private fun ReaderScreen(context: Context) {
                             ) {
                                 Text(
                                     text = if (selectedVersion == null) "Pick a Bible version in settings to search." else "Search the current Bible version.",
-                                    color = Color(0xFF9DB7A6)
+                                    color = themeAccent.copy(alpha = 0.78f)
                                 )
 
                                 OutlinedTextField(
@@ -569,9 +675,15 @@ private fun ReaderScreen(context: Context) {
                                             isBusy = false
                                         }
                                     }
+                                ,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = themeHighlight,
+                                        contentColor = themeAccent
+                                    ),
+                                    border = BorderStroke(1.dp, themeBorder)
                                 ) { Text("Find") }
 
-                                Text(status, color = Color(0xFF9DB7A6))
+                                Text(status, color = themeAccent.copy(alpha = 0.78f))
 
                                 LazyColumn(
                                     modifier = Modifier.fillMaxSize(),
@@ -626,14 +738,20 @@ private fun ReaderScreen(context: Context) {
 
                         ReaderPage.Settings -> {
                             Column(
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(settingsScrollState)
+                                    .padding(bottom = 24.dp),
                                 verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
                                 Text("Bible version", style = MaterialTheme.typography.titleMedium)
 
                                 Box {
-                                    TextButton(onClick = { installedExpanded = true }) {
-                                        Text(selectedVersion?.label ?: "Select offline version")
+                                    TextButton(
+                                        onClick = { installedExpanded = true },
+                                        modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
+                                    ) {
+                                        Text(selectedVersion?.label ?: "Select offline version", color = themeAccent)
                                     }
                                     DropdownMenu(
                                         expanded = installedExpanded,
@@ -655,18 +773,26 @@ private fun ReaderScreen(context: Context) {
                                 }
 
                                 Box {
-                                    Button(enabled = !isBusy, onClick = {
-                                        scope.launch {
-                                            isBusy = true
-                                            status = "Loading version catalog..."
-                                            val fetched = repository.fetchRemoteVersions()
-                                            remoteVersions.clear()
-                                            remoteVersions.addAll(fetched)
-                                            status = if (fetched.isEmpty()) "No versions found from available sources." else "Choose a version to download."
-                                            isBusy = false
-                                            remoteExpanded = fetched.isNotEmpty()
-                                        }
-                                    }) { Text("Refresh sources") }
+                                    Button(
+                                        enabled = !isBusy,
+                                        onClick = {
+                                            scope.launch {
+                                                isBusy = true
+                                                status = "Loading version catalog..."
+                                                val fetched = repository.fetchRemoteVersions()
+                                                remoteVersions.clear()
+                                                remoteVersions.addAll(fetched)
+                                                status = if (fetched.isEmpty()) "No versions found from available sources." else "Choose a version to download."
+                                                isBusy = false
+                                                remoteExpanded = fetched.isNotEmpty()
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = themeHighlight,
+                                            contentColor = themeAccent
+                                        ),
+                                        border = BorderStroke(1.dp, themeBorder)
+                                    ) { Text("Refresh sources") }
 
                                     DropdownMenu(
                                         expanded = remoteExpanded,
@@ -695,48 +821,131 @@ private fun ReaderScreen(context: Context) {
                                     }
                                 }
 
-                                Text("Reader style", style = MaterialTheme.typography.titleMedium)
+                                Text("Theme", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text("Use Android primary theme color", color = themeAccent)
+                                            Switch(
+                                                checked = useAndroidPrimaryTheme,
+                                                onCheckedChange = {
+                                                    useAndroidPrimaryTheme = it
+                                                    scope.launch { prefs.saveTheme(themeColorIndex, useAndroidPrimaryTheme) }
+                                                }
+                                            )
+                                        }
+
+                                        Text(
+                                            text = if (useAndroidPrimaryTheme) "Android primary is active. Pick a swatch to keep a fallback when it is off." else "Choose one of 10 subtle theme colors.",
+                                            color = themeAccent.copy(alpha = 0.78f)
+                                        )
+
+                                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            ThemeAccentOptions.chunked(5).forEachIndexed { rowIndex, row ->
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    row.forEachIndexed { columnIndex, swatch ->
+                                                        val swatchIndex = rowIndex * 5 + columnIndex
+                                                        val selected = swatchIndex == themeColorIndex
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .height(42.dp)
+                                                                .background(swatch, RoundedCornerShape(12.dp))
+                                                                .border(
+                                                                    1.dp,
+                                                                    if (selected) themeBorder else Color(0xFF2C3130),
+                                                                    RoundedCornerShape(12.dp)
+                                                                )
+                                                                .pointerInput(swatchIndex, useAndroidPrimaryTheme) {
+                                                                    detectTapGestures(onTap = {
+                                                                        themeColorIndex = swatchIndex
+                                                                        scope.launch { prefs.saveTheme(themeColorIndex, useAndroidPrimaryTheme) }
+                                                                    })
+                                                                },
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            Text(
+                                                                text = if (selected) "✓" else "",
+                                                                color = Color.White.copy(alpha = if (selected) 0.95f else 0f)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Text("Reader style", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+
+                                        Text("Font family", color = themeAccent.copy(alpha = 0.78f))
+                                        Box {
+                                            TextButton(
+                                                onClick = { fontFamilyExpanded = true },
+                                                modifier = Modifier
+                                                    .border(1.dp, themeBorder, RoundedCornerShape(8.dp))
+                                                    .background(themeHighlight, RoundedCornerShape(8.dp))
+                                            ) {
+                                                Text("${fontFamilyLabel(fontFamilyKey)} ▼", color = themeAccent)
+                                            }
+                                            DropdownMenu(
+                                                expanded = fontFamilyExpanded,
+                                                onDismissRequest = { fontFamilyExpanded = false },
+                                                containerColor = MenuBackgroundColor
+                                            ) {
+                                                listOf("serif", "sans", "mono").forEach { family ->
+                                                    DropdownMenuItem(
+                                                        text = { Text(fontFamilyLabel(family), color = MenuTextColor) },
+                                                        onClick = {
+                                                            fontFamilyExpanded = false
+                                                            fontFamilyKey = family
+                                                            scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
 
                                 val previewVerse = verses.firstOrNull { it.number == currentVerse }
-                                Text("Style preview", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF9DB7A6))
+                                Text("Style preview", style = MaterialTheme.typography.bodyMedium, color = themeAccent.copy(alpha = 0.78f))
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .background(Color(0xFF132018), RoundedCornerShape(8.dp))
+                                        .background(themeHighlight, RoundedCornerShape(8.dp))
                                         .padding(12.dp)
                                 ) {
                                     Text(
                                         text = previewVerse?.let {
                                             "${bookName(currentBook)} $currentChapter:${it.number} ${it.text}"
                                         } ?: "Select a verse in Scripture to preview its styling here.",
-                                        color = if (previewVerse != null) Color(0xFFCAE6D0) else Color(0xFF9DB7A6),
+                                        color = if (previewVerse != null) themeAccent else themeAccent.copy(alpha = 0.78f),
                                         fontSize = fontSizeSp.sp,
                                         fontFamily = selectedFontFamily()
                                     )
                                 }
 
-                                TextButton(onClick = {
-                                    fontFamilyKey = when (fontFamilyKey) {
-                                        "serif" -> "sans"
-                                        "sans" -> "mono"
-                                        else -> "serif"
-                                    }
-                                    scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
-                                }) {
-                                    Text("Font: ${fontFamilyLabel(fontFamilyKey)}")
-                                }
-
-                                Text("Size: ${fontSizeSp.toInt()}sp", color = Color(0xFF9DB7A6))
+                                Text("Size: ${fontSizeSp.toInt()}sp", color = themeAccent.copy(alpha = 0.78f))
                                 Slider(
                                     value = fontSizeSp,
                                     onValueChange = {
                                         fontSizeSp = it
                                         scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
                                     },
-                                    valueRange = 14f..34f
+                                    valueRange = 14f..34f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = themeAccent,
+                                        activeTrackColor = themeAccent,
+                                        activeTickColor = themeAccent,
+                                        inactiveTrackColor = themeAccent.copy(alpha = 0.28f),
+                                        inactiveTickColor = themeAccent.copy(alpha = 0.28f)
+                                    )
                                 )
 
-                                Text(status, color = Color(0xFF9DB7A6))
+                                Text(status, color = themeAccent.copy(alpha = 0.78f))
                             }
                         }
                     }
@@ -758,11 +967,11 @@ private fun ReaderScreen(context: Context) {
                     shape = RoundedCornerShape(0.dp),
                     border = BorderStroke(
                         1.dp,
-                        if (currentPage == ReaderPage.Search) Color(0xFF82A98E) else Color(0xFF3A3F3C)
+                        if (currentPage == ReaderPage.Search) themeBorder else Color(0xFF3A3F3C)
                     ),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (currentPage == ReaderPage.Search) Color(0xFF18251D) else Color(0xFF121212),
-                        contentColor = if (currentPage == ReaderPage.Search) Color(0xFFF2F6F4) else Color(0xFFB9C9BF)
+                        containerColor = if (currentPage == ReaderPage.Search) themeHighlight else Color(0xFF121212),
+                        contentColor = if (currentPage == ReaderPage.Search) Color(0xFFF2F6F4) else themeAccent.copy(alpha = 0.72f)
                     )
                 ) {
                     Text("Search")
@@ -775,11 +984,11 @@ private fun ReaderScreen(context: Context) {
                     shape = RoundedCornerShape(0.dp),
                     border = BorderStroke(
                         1.dp,
-                        if (currentPage == ReaderPage.Scripture) Color(0xFF82A98E) else Color(0xFF3A3F3C)
+                        if (currentPage == ReaderPage.Scripture) themeBorder else Color(0xFF3A3F3C)
                     ),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (currentPage == ReaderPage.Scripture) Color(0xFF18251D) else Color(0xFF121212),
-                        contentColor = if (currentPage == ReaderPage.Scripture) Color(0xFFF2F6F4) else Color(0xFFB9C9BF)
+                        containerColor = if (currentPage == ReaderPage.Scripture) themeHighlight else Color(0xFF121212),
+                        contentColor = if (currentPage == ReaderPage.Scripture) Color(0xFFF2F6F4) else themeAccent.copy(alpha = 0.72f)
                     )
                 ) {
                     Text("Scripture")
@@ -832,7 +1041,9 @@ private data class ReaderSettings(
     val book: Int,
     val chapter: Int,
     val fontFamily: String,
-    val fontSize: Float
+    val fontSize: Float,
+    val themeColorIndex: Int,
+    val useAndroidPrimaryTheme: Boolean
 )
 
 private class ReaderPreferencesStore(private val context: Context) {
@@ -842,6 +1053,8 @@ private class ReaderPreferencesStore(private val context: Context) {
     private val chapterKey = intPreferencesKey("chapter")
     private val fontFamilyKey = stringPreferencesKey("font_family")
     private val fontSizeKey = floatPreferencesKey("font_size")
+    private val themeColorIndexKey = intPreferencesKey("theme_color_index")
+    private val useAndroidPrimaryThemeKey = booleanPreferencesKey("use_android_primary_theme")
 
     suspend fun load(): ReaderSettings {
         val prefs = context.dataStore.data.first()
@@ -850,7 +1063,9 @@ private class ReaderPreferencesStore(private val context: Context) {
             book = prefs[bookKey] ?: 1,
             chapter = prefs[chapterKey] ?: 1,
             fontFamily = prefs[fontFamilyKey] ?: "serif",
-            fontSize = prefs[fontSizeKey] ?: 20f
+            fontSize = prefs[fontSizeKey] ?: 20f,
+            themeColorIndex = prefs[themeColorIndexKey] ?: 0,
+            useAndroidPrimaryTheme = prefs[useAndroidPrimaryThemeKey] ?: false
         )
     }
 
@@ -872,6 +1087,13 @@ private class ReaderPreferencesStore(private val context: Context) {
         context.dataStore.edit {
             it[fontFamilyKey] = fontFamily
             it[fontSizeKey] = fontSize
+        }
+    }
+
+    suspend fun saveTheme(themeColorIndex: Int, useAndroidPrimaryTheme: Boolean) {
+        context.dataStore.edit {
+            it[themeColorIndexKey] = themeColorIndex
+            it[useAndroidPrimaryThemeKey] = useAndroidPrimaryTheme
         }
     }
 }
