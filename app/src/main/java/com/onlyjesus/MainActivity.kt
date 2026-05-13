@@ -242,6 +242,15 @@ private enum class ReferencePickerStage {
     Chapter
 }
 
+private fun isPublicDomainCopyright(copyright: String?): Boolean {
+    if (copyright.isNullOrBlank()) return true
+    val normalized = copyright.lowercase()
+    return normalized.contains("public domain") ||
+        normalized.contains("unlicense") ||
+        normalized.contains("cc0") ||
+        normalized.contains("creativecommons.org/publicdomain")
+}
+
 @Composable
 private fun androidPrimaryThemeColor(context: Context): Color {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -308,6 +317,8 @@ private fun ReaderScreen(context: Context) {
     var referencePickerStage by remember { mutableStateOf(ReferencePickerStage.Book) }
     var searchQuery by remember { mutableStateOf("") }
     var licenseExpanded by remember { mutableStateOf(false) }
+    var licenseTapStreak by remember { mutableStateOf(0) }
+    var showNonPublicDomainVersions by remember { mutableStateOf(false) }
     var pendingScrollVerse by remember(currentBook, currentChapter, selectedVersion?.file?.absolutePath) { mutableStateOf<Int?>(null) }
     val verses = remember { mutableStateListOf<Verse>() }
     val verseListState = rememberLazyListState()
@@ -531,6 +542,13 @@ private fun ReaderScreen(context: Context) {
     fun refreshInstalled() {
         installedVersions.clear()
         installedVersions.addAll(repository.installedVersions())
+        if (!showNonPublicDomainVersions && selectedVersion?.isPublicDomain == false) {
+            val publicDomainFallback = installedVersions.firstOrNull { it.isPublicDomain }
+            selectedVersion = publicDomainFallback
+            if (publicDomainFallback != null) {
+                scope.launch { prefs.saveVersion(publicDomainFallback.file.absolutePath, publicDomainFallback.label) }
+            }
+        }
     }
 
     fun fallbackVersion(): InstalledVersion? {
@@ -694,7 +712,12 @@ private fun ReaderScreen(context: Context) {
                 break
             }
         }
-        selectedVersion = restoredVersion ?: installedVersions.firstOrNull()
+        val preferredVersion = restoredVersion ?: installedVersions.firstOrNull()
+        selectedVersion = if (showNonPublicDomainVersions || preferredVersion?.isPublicDomain != false) {
+            preferredVersion
+        } else {
+            installedVersions.firstOrNull { it.isPublicDomain }
+        }
 
         val restoredSelectedVersion = selectedVersion
         if (restoredSelectedVersion != null) {
@@ -1517,16 +1540,28 @@ private fun ReaderScreen(context: Context) {
                                         onDismissRequest = { installedExpanded = false },
                                         containerColor = MenuBackgroundColor
                                     ) {
-                                        installedVersions.forEach { version ->
+                                        val visibleInstalled = if (showNonPublicDomainVersions) {
+                                            installedVersions
+                                        } else {
+                                            installedVersions.filter { it.isPublicDomain }
+                                        }
+                                        if (visibleInstalled.isEmpty()) {
                                             DropdownMenuItem(
-                                                text = { Text(version.label, color = MenuTextColor) },
-                                                onClick = {
-                                                    installedExpanded = false
-                                                    selectedVersion = version
-                                                    scope.launch { prefs.saveVersion(version.file.absolutePath, version.label) }
-                                                    loadChapter()
-                                                }
+                                                text = { Text("No public-domain versions installed", color = MenuTextColor.copy(alpha = 0.7f)) },
+                                                onClick = { installedExpanded = false }
                                             )
+                                        } else {
+                                            visibleInstalled.forEach { version ->
+                                                DropdownMenuItem(
+                                                    text = { Text(version.label, color = MenuTextColor) },
+                                                    onClick = {
+                                                        installedExpanded = false
+                                                        selectedVersion = version
+                                                        scope.launch { prefs.saveVersion(version.file.absolutePath, version.label) }
+                                                        loadChapter()
+                                                    }
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1550,9 +1585,18 @@ private fun ReaderScreen(context: Context) {
                                                 val fetched = repository.fetchRemoteVersions()
                                                 remoteVersions.clear()
                                                 remoteVersions.addAll(fetched)
-                                                status = if (fetched.isEmpty()) "No versions found from available sources." else "Choose a version to download."
+                                                val visibleRemoteCount = if (showNonPublicDomainVersions) {
+                                                    fetched.size
+                                                } else {
+                                                    fetched.count { it.isPublicDomain }
+                                                }
+                                                status = if (visibleRemoteCount == 0) {
+                                                    "No public-domain versions found from available sources."
+                                                } else {
+                                                    "Choose a version to download."
+                                                }
                                                 isBusy = false
-                                                remoteExpanded = fetched.isNotEmpty()
+                                                remoteExpanded = visibleRemoteCount > 0
                                             }
                                         },
                                         colors = ButtonDefaults.buttonColors(
@@ -1569,24 +1613,36 @@ private fun ReaderScreen(context: Context) {
                                         onDismissRequest = { remoteExpanded = false },
                                         containerColor = MenuBackgroundColor
                                     ) {
-                                        remoteVersions.forEach { remote ->
+                                        val visibleRemote = if (showNonPublicDomainVersions) {
+                                            remoteVersions
+                                        } else {
+                                            remoteVersions.filter { it.isPublicDomain }
+                                        }
+                                        if (visibleRemote.isEmpty()) {
                                             DropdownMenuItem(
-                                                text = { Text("${remote.displayName} (${remote.sizeMb} MB)", color = MenuTextColor) },
-                                                onClick = {
-                                                    remoteExpanded = false
-                                                    scope.launch {
-                                                        isBusy = true
-                                                        status = "Downloading ${remote.displayName}..."
-                                                        val installed = repository.installRemoteVersion(remote)
-                                                        refreshInstalled()
-                                                        selectedVersion = installed
-                                                        prefs.saveVersion(installed.file.absolutePath, installed.label)
-                                                        status = "Downloaded ${installed.label}."
-                                                        loadChapter()
-                                                        isBusy = false
-                                                    }
-                                                }
+                                                text = { Text("No public-domain versions available", color = MenuTextColor.copy(alpha = 0.7f)) },
+                                                onClick = { remoteExpanded = false }
                                             )
+                                        } else {
+                                            visibleRemote.forEach { remote ->
+                                                DropdownMenuItem(
+                                                    text = { Text("${remote.displayName} (${remote.sizeMb} MB)", color = MenuTextColor) },
+                                                    onClick = {
+                                                        remoteExpanded = false
+                                                        scope.launch {
+                                                            isBusy = true
+                                                            status = "Downloading ${remote.displayName}..."
+                                                            val installed = repository.installRemoteVersion(remote)
+                                                            refreshInstalled()
+                                                            selectedVersion = installed
+                                                            prefs.saveVersion(installed.file.absolutePath, installed.label)
+                                                            status = "Downloaded ${installed.label}."
+                                                            loadChapter()
+                                                            isBusy = false
+                                                        }
+                                                    }
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1839,9 +1895,26 @@ private fun ReaderScreen(context: Context) {
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Text("License", style = MaterialTheme.typography.titleMedium, color = themeAccent)
-                                            TextButton(onClick = { licenseExpanded = !licenseExpanded }) {
+                                            TextButton(onClick = {
+                                                licenseExpanded = !licenseExpanded
+                                                if (!showNonPublicDomainVersions) {
+                                                    licenseTapStreak += 1
+                                                    if (licenseTapStreak >= 10) {
+                                                        showNonPublicDomainVersions = true
+                                                        status = "Non-public-domain versions unlocked for this session."
+                                                    }
+                                                }
+                                            }) {
                                                 Text(if (licenseExpanded) "Hide" else "Show", color = themeAccent)
                                             }
+                                        }
+
+                                        if (!showNonPublicDomainVersions) {
+                                            Text(
+                                                text = "Tap License 10 times in a row to show all versions.",
+                                                color = themeAccent.copy(alpha = 0.72f),
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
                                         }
 
                                         if (licenseExpanded) {
@@ -2107,7 +2180,12 @@ private data class ChapterLoad(
     val chapterText: List<Verse>
 )
 data class ChapterLocation(val book: Int, val chapter: Int)
-data class InstalledVersion(val label: String, val file: File, val copyright: String? = null)
+data class InstalledVersion(
+    val label: String,
+    val file: File,
+    val copyright: String? = null,
+    val isPublicDomain: Boolean = true
+)
 data class FontOption(val key: String, val label: String, val family: FontFamily)
 data class BibleSource(
     val owner: String,
@@ -2126,7 +2204,9 @@ data class RemoteVersion(
     val branch: String,
     val path: String,
     val sizeBytes: Long,
-    val displayNameOverride: String? = null
+    val displayNameOverride: String? = null,
+    val copyright: String? = null,
+    val isPublicDomain: Boolean = true
 ) {
     val displayName: String = displayNameOverride ?: "${source.label}: ${displayNameFromPath(path)}"
     val sizeMb: String = String.format("%.1f", sizeBytes / 1024.0 / 1024.0)
@@ -2287,10 +2367,12 @@ private class BibleRepository(private val context: Context) {
         .sortedBy { it.absolutePath.lowercase() }
         .map { file ->
             val displayName = xmlBibleNameFromFile(file) ?: displayNameFromPath(file.name)
+            val copyright = xmlBibleCopyrightFromFile(file)
             InstalledVersion(
                 label = displayName,
                 file = file,
-                copyright = xmlBibleCopyrightFromFile(file)
+                copyright = copyright,
+                isPublicDomain = isPublicDomainCopyright(copyright)
             )
         }
         .toList()
@@ -2304,12 +2386,15 @@ private class BibleRepository(private val context: Context) {
                     .filter { it.lowercase().endsWith(".xml") }
                     .forEach { assetName ->
                         val assetPath = "${source.bundledAssetDir}/$assetName"
+                        val copyright = xmlBibleCopyrightFromAsset(assetPath)
                         versions += RemoteVersion(
                             source = source,
                             branch = source.branch,
                             path = assetPath,
                             sizeBytes = bundledAssetSize(assetPath),
-                            displayNameOverride = xmlBibleNameFromAsset(assetPath)
+                            displayNameOverride = xmlBibleNameFromAsset(assetPath),
+                            copyright = copyright,
+                            isPublicDomain = isPublicDomainCopyright(copyright)
                         )
                     }
             } else {
@@ -2341,10 +2426,12 @@ private class BibleRepository(private val context: Context) {
                 downloadFile(remote.downloadUrl, target)
             }
         }
+        val resolvedCopyright = remote.copyright ?: xmlBibleCopyrightFromFile(target)
         InstalledVersion(
             label = remote.displayName,
             file = target,
-            copyright = xmlBibleCopyrightFromFile(target)
+            copyright = resolvedCopyright,
+            isPublicDomain = isPublicDomainCopyright(resolvedCopyright)
         )
     }
 
@@ -2392,6 +2479,16 @@ private class BibleRepository(private val context: Context) {
         return try {
             context.assets.open(assetPath).use { input ->
                 xmlBibleNameFromInput(input)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun xmlBibleCopyrightFromAsset(assetPath: String): String? {
+        return try {
+            context.assets.open(assetPath).use { input ->
+                xmlBibleCopyrightFromInput(input)
             }
         } catch (_: Exception) {
             null
