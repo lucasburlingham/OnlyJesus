@@ -12,8 +12,8 @@ android {
         applicationId = "com.onlyjesus"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -49,11 +49,13 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
+    implementation("androidx.compose.material:material-icons-extended")
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.datastore.preferences)
+    implementation("com.mohamedrejeb.richeditor:richeditor-compose-android:1.0.0-dev01")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

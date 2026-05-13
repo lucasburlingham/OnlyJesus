@@ -1,6 +1,14 @@
 package com.onlyjesus
 
 import android.app.Activity
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.FormatBold
+import androidx.compose.material.icons.outlined.FormatItalic
+import androidx.compose.material.icons.outlined.FormatListNumbered
+import androidx.compose.material.icons.outlined.FormatUnderlined
+import androidx.compose.material.icons.outlined.Share
 import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -19,6 +27,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -42,6 +51,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -52,8 +66,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.animation.animateContentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -70,9 +86,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -89,17 +109,24 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import android.graphics.Typeface
 import kotlin.math.abs
+import kotlin.math.roundToInt
+import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
+import com.mohamedrejeb.richeditor.model.rememberRichTextState
+import com.mohamedrejeb.richeditor.ui.material3.OutlinedRichTextEditor
 
 private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
 private const val CONTENT_BOTTOM_PADDING = 96
-private val MenuBackgroundColor = Color(0xFF111111)
-private val MenuTextColor = Color(0xFFE8E6E3)
+private const val API_BIBLE_BASE_URL = "https://rest.api.bible/v1"
 private val ThemeAccentOptions = listOf(
     Color(0xFF82A98E),
     Color(0xFF74A7A0),
@@ -116,7 +143,15 @@ private val BibleSources = listOf(
     BibleSource(
         owner = "scrollmapper",
         repo = "bible_databases",
-        branch = "2024"
+        branch = "2024",
+        pathPrefix = "json/t_",
+        pathSuffix = ".json"
+    ),
+    BibleSource(
+        owner = "Beblia",
+        repo = "Bundled-XML",
+        branch = "local",
+        bundledAssetDir = "bibles/beblia"
     )
 )
 private val BibleBookNames = listOf(
@@ -192,7 +227,14 @@ private val Context.dataStore by preferencesDataStore(name = "reader_settings")
 private enum class ReaderPage {
     Scripture,
     Search,
-    Settings
+    Settings,
+    Library
+}
+
+private enum class ThemeModePreference {
+    Light,
+    System,
+    Dark
 }
 
 private enum class ReferencePickerStage {
@@ -221,6 +263,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalRichTextApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun ReaderScreen(context: Context) {
     val view = LocalView.current
@@ -244,6 +287,7 @@ private fun ReaderScreen(context: Context) {
     val prefs = remember { ReaderPreferencesStore(context) }
     val repository = remember { BibleRepository(context) }
     val reader = remember { JsonBibleReader() }
+    val libraryStore = remember { VerseLibraryStore(context) }
 
     var currentPage by remember { mutableStateOf(ReaderPage.Scripture) }
     var selectedVersion by remember { mutableStateOf<InstalledVersion?>(null) }
@@ -254,6 +298,7 @@ private fun ReaderScreen(context: Context) {
     var fontFamilyExpanded by remember { mutableStateOf(false) }
     var fontSizeSp by remember { mutableStateOf(20f) }
     var themeColorIndex by remember { mutableStateOf(0) }
+    var themeModePreference by remember { mutableStateOf(ThemeModePreference.System) }
     var useAndroidPrimaryTheme by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("No offline Bible selected.") }
     var isBusy by remember { mutableStateOf(false) }
@@ -263,8 +308,19 @@ private fun ReaderScreen(context: Context) {
     var referencePickerStage by remember { mutableStateOf(ReferencePickerStage.Book) }
     var searchQuery by remember { mutableStateOf("") }
     var licenseExpanded by remember { mutableStateOf(false) }
+    var pendingScrollVerse by remember(currentBook, currentChapter, selectedVersion?.file?.absolutePath) { mutableStateOf<Int?>(null) }
     val verses = remember { mutableStateListOf<Verse>() }
     val verseListState = rememberLazyListState()
+    val highlightedVerseNumber by remember(verses, currentPage) {
+        derivedStateOf {
+            if (currentPage != ReaderPage.Scripture || verses.isEmpty()) {
+                currentVerse
+            } else {
+                val secondVisibleIndex = (verseListState.firstVisibleItemIndex + 1).coerceAtMost(verses.lastIndex)
+                verses.getOrNull(secondVisibleIndex)?.number ?: verses.first().number
+            }
+        }
+    }
     val availableBooks = remember { mutableStateListOf<Int>() }
     val availableChapters = remember { mutableStateListOf<Int>() }
     val availableVerses = remember { mutableStateListOf<Int>() }
@@ -278,16 +334,53 @@ private fun ReaderScreen(context: Context) {
     var swipeOffsetPx by remember { mutableFloatStateOf(0f) }
     var swipeSettledOffsetPx by remember { mutableFloatStateOf(0f) }
     var isDraggingChapter by remember { mutableStateOf(false) }
+    val verseAnnotations = remember { mutableStateListOf<VerseAnnotation>() }
+    val readingHistory = remember { mutableStateListOf<ReadingHistoryEntry>() }
+    var selectedLibraryVerse by remember { mutableStateOf<VerseReference?>(null) }
+    val noteEditorState = rememberRichTextState()
+    var librarySection by remember { mutableStateOf(LibrarySection.Bookmarks) }
+    val searchScrollState = rememberScrollState()
+    val libraryScrollState = rememberScrollState()
+
+    fun persistLibraryState(section: LibrarySection = librarySection, reference: VerseReference? = selectedLibraryVerse) {
+        scope.launch {
+            prefs.saveLibraryState(section, reference)
+        }
+    }
 
     suspend fun loadChapterData(book: Int, chapter: Int, verse: Int = 1): ChapterLoad? = withContext(Dispatchers.IO) {
         val version = selectedVersion ?: return@withContext null
         val books = reader.availableBooks(version.file)
-        val normalizedBook = books.firstOrNull { it == book } ?: books.firstOrNull() ?: return@withContext null
+        var normalizedBook = books.firstOrNull()
+        for (candidate in books) {
+            if (candidate == book) {
+                normalizedBook = candidate
+                break
+            }
+        }
+        if (normalizedBook == null) return@withContext null
         val chapters = reader.availableChapters(version.file, normalizedBook)
-        val normalizedChapter = chapters.firstOrNull { it == chapter } ?: chapters.firstOrNull() ?: return@withContext null
+        var normalizedChapter = chapters.firstOrNull()
+        for (candidate in chapters) {
+            if (candidate == chapter) {
+                normalizedChapter = candidate
+                break
+            }
+        }
+        if (normalizedChapter == null) return@withContext null
         val chapterText = reader.readChapter(version.file, normalizedBook, normalizedChapter)
-        val verseNumbers = chapterText.map { it.number }
-        val normalizedVerse = verseNumbers.firstOrNull { it == verse } ?: verseNumbers.firstOrNull() ?: 1
+        val verseNumbers = buildList {
+            for (verseEntry in chapterText) {
+                add(verseEntry.number)
+            }
+        }
+        var normalizedVerse = verseNumbers.firstOrNull() ?: 1
+        for (candidate in verseNumbers) {
+            if (candidate == verse) {
+                normalizedVerse = candidate
+                break
+            }
+        }
         ChapterLoad(
             book = normalizedBook,
             chapter = normalizedChapter,
@@ -316,7 +409,13 @@ private fun ReaderScreen(context: Context) {
         }
     }
 
-    fun selectedFontFamily(): FontFamily = fontOptions.firstOrNull { it.key == fontFamilyKey }?.family ?: FontFamily.Serif
+    fun selectedFontOption(): FontOption? {
+        return fontOptions.firstOrNull { it.key == fontFamilyKey }
+    }
+
+    fun selectedFontFamily(): FontFamily {
+        return selectedFontOption()?.family ?: FontFamily.Serif
+    }
 
     @Composable
     fun selectedThemeColor(): Color {
@@ -329,47 +428,185 @@ private fun ReaderScreen(context: Context) {
 
     fun scriptureReference(): String = "${bookName(currentBook)} $currentChapter:$currentVerse"
 
+    fun currentVersionPath(): String = selectedVersion?.file?.absolutePath.orEmpty()
+
+    fun annotationFor(book: Int = currentBook, chapter: Int = currentChapter, verse: Int = currentVerse): VerseAnnotation? {
+        val versionPath = currentVersionPath()
+        for (annotation in verseAnnotations) {
+            if (annotation.versionPath == versionPath && annotation.book == book && annotation.chapter == chapter && annotation.verse == verse) {
+                return annotation
+            }
+        }
+        return null
+    }
+
+    fun currentAnnotation(): VerseAnnotation? = annotationFor()
+
+    fun refreshNoteEditor(reference: VerseReference) {
+        selectedLibraryVerse = reference
+        persistLibraryState()
+    }
+
+    fun updateAnnotation(book: Int, chapter: Int, verse: Int, transform: (VerseAnnotation) -> VerseAnnotation) {
+        val versionPath = currentVersionPath()
+        if (versionPath.isBlank()) return
+        var existingIndex = -1
+        for (index in verseAnnotations.indices) {
+            val annotation = verseAnnotations[index]
+            if (annotation.versionPath == versionPath && annotation.book == book && annotation.chapter == chapter && annotation.verse == verse) {
+                existingIndex = index
+                break
+            }
+        }
+        val existing = if (existingIndex >= 0) verseAnnotations[existingIndex] else VerseAnnotation(versionPath, book, chapter, verse)
+        val updated = transform(existing).copy(versionPath = versionPath, book = book, chapter = chapter, verse = verse, updatedAt = System.currentTimeMillis())
+        if (existingIndex >= 0) {
+            verseAnnotations[existingIndex] = updated
+        } else {
+            verseAnnotations.add(updated)
+        }
+        scope.launch {
+            libraryStore.saveAnnotations(verseAnnotations.toList())
+        }
+    }
+
+    fun setVerseBookmark(book: Int, chapter: Int, verse: Int, bookmarked: Boolean) {
+        updateAnnotation(book, chapter, verse) { it.copy(bookmarked = bookmarked) }
+    }
+
+    fun setVerseHighlight(book: Int, chapter: Int, verse: Int, highlighted: Boolean) {
+        updateAnnotation(book, chapter, verse) { it.copy(highlighted = highlighted) }
+    }
+
+    fun saveSelectedNote() {
+        val reference = selectedLibraryVerse ?: VerseReference(currentBook, currentChapter, currentVerse)
+        val text = noteEditorState.toMarkdown()
+        updateAnnotation(reference.book, reference.chapter, reference.verse) {
+            it.copy(noteMarkdown = text)
+        }
+    }
+
+    fun shareSelectedMarkdown() {
+        val reference = selectedLibraryVerse ?: VerseReference(currentBook, currentChapter, currentVerse)
+        val markdown = buildString {
+            appendLine("# ${bookName(reference.book)} ${reference.chapter}:${reference.verse}")
+            appendLine()
+            appendLine(noteEditorState.toMarkdown())
+        }.trim()
+        shareText(context, "${bookName(reference.book)} ${reference.chapter}:${reference.verse}", markdown)
+    }
+
+    fun recordHistory(book: Int, chapter: Int, verse: Int) {
+        val versionPath = currentVersionPath()
+        val versionLabel = selectedVersion?.label.orEmpty()
+        if (versionPath.isBlank() || versionLabel.isBlank()) return
+        val entry = ReadingHistoryEntry(versionPath, versionLabel, book, chapter, verse, System.currentTimeMillis())
+        var existingIndex = -1
+        for (index in readingHistory.indices) {
+            if (readingHistory[index].matches(entry)) {
+                existingIndex = index
+                break
+            }
+        }
+        if (existingIndex >= 0) {
+            readingHistory.removeAt(existingIndex)
+        }
+        readingHistory.add(0, entry)
+        while (readingHistory.size > 100) {
+            readingHistory.removeAt(readingHistory.lastIndex)
+        }
+        scope.launch {
+            libraryStore.saveHistory(readingHistory.toList())
+        }
+    }
+
+    fun bookmarkedAnnotations(): List<VerseAnnotation> = verseAnnotations
+        .filter {
+            it.versionPath == currentVersionPath() && (it.bookmarked || it.highlighted || it.noteMarkdown.isNotBlank())
+        }
+        .sortedWith(compareBy<VerseAnnotation> { annotation -> annotation.book }
+            .thenBy { annotation -> annotation.chapter }
+            .thenBy { annotation -> annotation.verse })
+
     fun refreshInstalled() {
         installedVersions.clear()
         installedVersions.addAll(repository.installedVersions())
     }
 
+    fun fallbackVersion(): InstalledVersion? {
+        return installedVersions.firstOrNull { version ->
+            val name = version.file.name.lowercase()
+            name.contains("kjv") || version.label.lowercase().contains("kjv")
+        } ?: installedVersions.firstOrNull()
+    }
+
+    suspend fun applyChapterLoad(chapterLoad: ChapterLoad) {
+        currentBook = chapterLoad.book
+        currentChapter = chapterLoad.chapter
+        currentVerse = chapterLoad.verse
+        availableBooks.clear()
+        availableBooks.addAll(chapterLoad.books)
+        availableChapters.clear()
+        availableChapters.addAll(chapterLoad.chapters)
+        availableVerses.clear()
+        availableVerses.addAll(chapterLoad.verses)
+        verses.clear()
+        verses.addAll(chapterLoad.chapterText)
+        pendingScrollVerse = chapterLoad.verse
+        status = if (chapterLoad.chapterText.isEmpty()) {
+            "No text found."
+        } else {
+            ""
+        }
+        prefs.savePosition(currentBook, currentChapter, currentVerse)
+        recordHistory(currentBook, currentChapter, currentVerse)
+    }
+
+    suspend fun updateChapterPreviews(version: InstalledVersion) = withContext(Dispatchers.IO) {
+        val previousLocation = reader.findAdjacent(version.file, currentBook, currentChapter, -1)
+        val previous = if (previousLocation != null) {
+            loadChapterData(previousLocation.book, previousLocation.chapter, 1)
+        } else {
+            null
+        }
+        val nextLocation = reader.findAdjacent(version.file, currentBook, currentChapter, 1)
+        val next = if (nextLocation != null) {
+            loadChapterData(nextLocation.book, nextLocation.chapter, 1)
+        } else {
+            null
+        }
+        previousChapterPreview = previous
+        nextChapterPreview = next
+    }
+
     fun loadChapter() {
-        val version = selectedVersion ?: return
         scope.launch {
             isBusy = true
-            val chapterLoad = loadChapterData(currentBook, currentChapter, currentVerse) ?: run {
+            val chapterLoad = runCatching { loadChapterData(currentBook, currentChapter, currentVerse) }.getOrNull()
+            if (chapterLoad == null) {
+                val fallback = fallbackVersion()
+                if (fallback != null && selectedVersion?.file?.absolutePath != fallback.file.absolutePath) {
+                    selectedVersion = fallback
+                    prefs.saveVersion(fallback.file.absolutePath, fallback.label)
+                    status = "That version could not load. Falling back to KJV."
+                    val fallbackLoad = runCatching { loadChapterData(currentBook, currentChapter, currentVerse) }.getOrNull()
+                    if (fallbackLoad != null) {
+                        applyChapterLoad(fallbackLoad)
+                        updateChapterPreviews(fallback)
+                    } else {
+                        status = "KJV also could not load."
+                    }
+                } else {
+                    status = "That version could not load."
+                }
                 isBusy = false
                 return@launch
             }
-            currentBook = chapterLoad.book
-            currentChapter = chapterLoad.chapter
-            currentVerse = chapterLoad.verse
-            availableBooks.clear()
-            availableBooks.addAll(chapterLoad.books)
-            availableChapters.clear()
-            availableChapters.addAll(chapterLoad.chapters)
-            availableVerses.clear()
-            availableVerses.addAll(chapterLoad.verses)
-            verses.clear()
-            verses.addAll(chapterLoad.chapterText)
-            status = if (chapterLoad.chapterText.isEmpty()) {
-                "No text found."
-            } else {
-                ""
+            applyChapterLoad(chapterLoad)
+            val version = selectedVersion
+            if (version != null) {
+                updateChapterPreviews(version)
             }
-            prefs.savePosition(currentBook, currentChapter)
-            val adjacentPreviews = withContext(Dispatchers.IO) {
-                val previous = reader.findAdjacent(version.file, currentBook, currentChapter, -1)?.let {
-                    loadChapterData(it.book, it.chapter, 1)
-                }
-                val next = reader.findAdjacent(version.file, currentBook, currentChapter, 1)?.let {
-                    loadChapterData(it.book, it.chapter, 1)
-                }
-                previous to next
-            }
-            previousChapterPreview = adjacentPreviews.first
-            nextChapterPreview = adjacentPreviews.second
             isBusy = false
         }
     }
@@ -380,12 +617,37 @@ private fun ReaderScreen(context: Context) {
             val adjacent = withContext(Dispatchers.IO) {
                 reader.findAdjacent(version.file, currentBook, currentChapter, direction)
             }
-            adjacent?.let {
-                currentBook = it.book
-                currentChapter = it.chapter
+            if (adjacent != null) {
+                currentBook = adjacent.book
+                currentChapter = adjacent.chapter
                 currentVerse = 1
                 loadChapter()
             }
+        }
+    }
+
+    fun loadRandomChapter() {
+        val version = selectedVersion ?: return
+        scope.launch {
+            isBusy = true
+            val randomLocation = withContext(Dispatchers.IO) {
+                val books = reader.availableBooks(version.file)
+                if (books.isEmpty()) return@withContext null
+                val book = books.random()
+                val chapters = reader.availableChapters(version.file, book)
+                if (chapters.isEmpty()) return@withContext null
+                val chapter = chapters.random()
+                ChapterLocation(book, chapter)
+            } ?: run {
+                isBusy = false
+                return@launch
+            }
+
+            currentBook = randomLocation.book
+            currentChapter = randomLocation.chapter
+            currentVerse = 1
+            currentPage = ReaderPage.Scripture
+            loadChapter()
         }
     }
 
@@ -393,25 +655,59 @@ private fun ReaderScreen(context: Context) {
         val saved = prefs.load()
         currentBook = saved.book
         currentChapter = saved.chapter
+        currentVerse = saved.verse
         fontFamilyKey = saved.fontFamily
         fontSizeSp = saved.fontSize
         themeColorIndex = saved.themeColorIndex.coerceIn(0, ThemeAccentOptions.lastIndex)
+        themeModePreference = saved.themeMode
         useAndroidPrimaryTheme = saved.useAndroidPrimaryTheme
+        librarySection = saved.librarySection
+        selectedLibraryVerse = if (saved.libraryBook > 0 && saved.libraryChapter > 0 && saved.libraryVerse > 0) {
+            VerseReference(saved.libraryBook, saved.libraryChapter, saved.libraryVerse)
+        } else {
+            null
+        }
+
+        verseAnnotations.clear()
+        verseAnnotations.addAll(libraryStore.loadAnnotations())
+        readingHistory.clear()
+        readingHistory.addAll(libraryStore.loadHistory())
 
         refreshInstalled()
         refreshFonts()
 
-        if (fontOptions.none { it.key == fontFamilyKey }) {
+        var hasFontFamily = false
+        for (option in fontOptions) {
+            if (option.key == fontFamilyKey) {
+                hasFontFamily = true
+                break
+            }
+        }
+        if (!hasFontFamily) {
             fontFamilyKey = fontOptions.firstOrNull()?.key ?: "serif"
         }
 
-        selectedVersion = installedVersions.firstOrNull {
-            it.file.absolutePath == saved.versionPath
-        } ?: installedVersions.firstOrNull()
+        var restoredVersion: InstalledVersion? = null
+        for (version in installedVersions) {
+            if (version.file.absolutePath == saved.versionPath) {
+                restoredVersion = version
+                break
+            }
+        }
+        selectedVersion = restoredVersion ?: installedVersions.firstOrNull()
 
-        selectedVersion?.let {
-            prefs.saveVersion(it.file.absolutePath, it.label)
+        val restoredSelectedVersion = selectedVersion
+        if (restoredSelectedVersion != null) {
+            prefs.saveVersion(restoredSelectedVersion.file.absolutePath, restoredSelectedVersion.label)
             loadChapter()
+        }
+
+        persistLibraryState()
+    }
+
+    LaunchedEffect(currentPage, currentBook, currentChapter, currentVerse, selectedVersion) {
+        if (currentPage == ReaderPage.Scripture && selectedVersion != null) {
+            prefs.savePosition(currentBook, currentChapter, currentVerse)
         }
     }
 
@@ -423,25 +719,37 @@ private fun ReaderScreen(context: Context) {
         }
         val version = selectedVersion ?: return@LaunchedEffect
         val previousPreview = withContext(Dispatchers.IO) {
-            reader.findAdjacent(version.file, currentBook, currentChapter, -1)?.let {
-                loadChapterData(it.book, it.chapter, 1)
+            val previousChapter = reader.findAdjacent(version.file, currentBook, currentChapter, -1)
+            if (previousChapter != null) {
+                loadChapterData(previousChapter.book, previousChapter.chapter, 1)
+            } else {
+                null
             }
         }
         val nextPreview = withContext(Dispatchers.IO) {
-            reader.findAdjacent(version.file, currentBook, currentChapter, 1)?.let {
-                loadChapterData(it.book, it.chapter, 1)
+            val nextChapter = reader.findAdjacent(version.file, currentBook, currentChapter, 1)
+            if (nextChapter != null) {
+                loadChapterData(nextChapter.book, nextChapter.chapter, 1)
+            } else {
+                null
             }
         }
         previousChapterPreview = previousPreview
         nextChapterPreview = nextPreview
     }
 
-    LaunchedEffect(currentPage, currentBook, currentChapter, currentVerse, verses) {
+    LaunchedEffect(currentPage, pendingScrollVerse, verses) {
+        val targetVerse = pendingScrollVerse ?: return@LaunchedEffect
         if (currentPage != ReaderPage.Scripture || verses.isEmpty()) return@LaunchedEffect
-        val targetIndex = verses.indexOfFirst { it.number == currentVerse }.let { index ->
-            if (index >= 0) index else 0
+        var targetIndex = 0
+        for (index in verses.indices) {
+            if (verses[index].number == targetVerse) {
+                targetIndex = index
+                break
+            }
         }
-        verseListState.scrollToItem(targetIndex)
+        verseListState.animateScrollToItem(targetIndex)
+        pendingScrollVerse = null
     }
 
     LaunchedEffect(currentPage, verses) {
@@ -459,50 +767,93 @@ private fun ReaderScreen(context: Context) {
         currentPage = ReaderPage.Scripture
     }
 
+    val followsSystem = themeModePreference == ThemeModePreference.System
+    val isDarkTheme = when (themeModePreference) {
+        ThemeModePreference.Light -> false
+        ThemeModePreference.System -> isSystemInDarkTheme()
+        ThemeModePreference.Dark -> true
+    }
+    val backgroundColor = if (isDarkTheme) Color(0xFF0B0E0D) else Color(0xFFF4F0E8)
+    val surfaceColor = if (isDarkTheme) Color(0xFF121212) else Color(0xFFFFFCF8)
+    val panelColor = if (isDarkTheme) Color(0xFF161A18) else Color(0xFFFFFFFF)
+    val borderNeutral = if (isDarkTheme) Color(0xFF3A3F3C) else Color(0xFFD8D0C3)
+    val contentPrimary = if (isDarkTheme) Color(0xFFE8E6E3) else Color(0xFF171717)
+    val contentSecondary = if (isDarkTheme) contentPrimary.copy(alpha = 0.78f) else Color(0xFF404040).copy(alpha = 0.78f)
+    val contentOnAccent = if (isDarkTheme) Color(0xFFF2F6F4) else Color(0xFF132117)
+    val contentOnAccentMuted = if (isDarkTheme) contentOnAccent.copy(alpha = 0.72f) else Color(0xFF203125).copy(alpha = 0.82f)
+    val navInactiveContainer = if (isDarkTheme) Color(0xFF121212) else Color(0xFFF7F3EC)
+    val navInactiveBorder = if (isDarkTheme) Color(0xFF3A3F3C) else Color(0xFFD8D0C3)
+    val MenuBackgroundColor = if (isDarkTheme) Color(0xFF111111) else Color(0xFFFFFCF8)
+    val MenuTextColor = contentPrimary
+    val searchSectionBackground = if (isDarkTheme) Color(0xFF121212) else Color(0xFFFFFFFF)
+
     val themeAccent = selectedThemeColor()
     val themeHighlight = themeAccent.copy(alpha = 0.14f)
     val themeBorder = themeAccent.copy(alpha = 0.72f)
     val themeMuted = themeAccent.copy(alpha = 0.5f)
 
-    Surface(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black),
-        color = Color.Black,
-        contentColor = Color(0xFFE8E6E3)
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
+    val colorScheme = if (isDarkTheme) {
+        darkColorScheme(
+            primary = themeAccent,
+            secondary = themeAccent,
+            tertiary = themeAccent,
+            background = backgroundColor,
+            surface = surfaceColor,
+            onBackground = contentPrimary,
+            onSurface = contentPrimary,
+        )
+    } else {
+        lightColorScheme(
+            primary = themeAccent,
+            secondary = themeAccent,
+            tertiary = themeAccent,
+            background = backgroundColor,
+            surface = surfaceColor,
+            onBackground = contentPrimary,
+            onSurface = contentPrimary,
+        )
+    }
+
+    MaterialTheme(colorScheme = colorScheme) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(backgroundColor),
+            color = backgroundColor,
+            contentColor = contentPrimary
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
                         .padding(horizontal = 12.dp, vertical = 8.dp)
-                    .padding(bottom = CONTENT_BOTTOM_PADDING.dp),
+                        .padding(bottom = CONTENT_BOTTOM_PADDING.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+                ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        TextButton(
-                            onClick = {
-                                currentPage = if (currentPage == ReaderPage.Settings) {
-                                    ReaderPage.Scripture
-                                } else {
-                                    ReaderPage.Settings
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    TextButton(
+                                        onClick = {
+                                            currentPage = if (currentPage == ReaderPage.Settings) {
+                                                ReaderPage.Scripture
+                                            } else {
+                                                ReaderPage.Settings
+                                            }
+                                        },
+                                        modifier = Modifier.align(Alignment.CenterEnd)
+                                    ) {
+                                        Text(
+                                            text = "⚙",
+                                            color = themeAccent.copy(alpha = 0.75f),
+                                            style = MaterialTheme.typography.titleLarge
+                                        )
+                                    }
                                 }
-                            },
-                            modifier = Modifier.align(Alignment.CenterEnd)
-                        ) {
-                            Text(
-                                text = "⚙",
-                                color = themeAccent.copy(alpha = 0.75f),
-                                style = MaterialTheme.typography.titleLarge
-                            )
-                        }
-                    }
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -769,13 +1120,14 @@ private fun ReaderScreen(context: Context) {
                                     ) {
                                         items(verses) { verse ->
                                             var verseMenuExpanded by remember(verse.number, verse.text) { mutableStateOf(false) }
+                                            val annotation = annotationFor(verse = verse.number)
                                             val verseText = "${bookName(currentBook)} $currentChapter:${verse.number} ${verse.text}"
                                             val verseDisplay = buildAnnotatedString {
-                                                withStyle(SpanStyle(color = if (verse.number == currentVerse) themeMuted else Color(0xFFE8E6E3).copy(alpha = 0.25f))) {
+                                                withStyle(SpanStyle(color = if (verse.number == highlightedVerseNumber) themeMuted else contentSecondary.copy(alpha = 0.55f))) {
                                                     append("${verse.number}.")
                                                 }
                                                 append(" ")
-                                                withStyle(SpanStyle(color = if (verse.number == currentVerse) themeAccent else Color(0xFFE8E6E3))) {
+                                                withStyle(SpanStyle(color = if (verse.number == highlightedVerseNumber) themeAccent else contentPrimary)) {
                                                     append(verse.text)
                                                 }
                                             }
@@ -784,7 +1136,13 @@ private fun ReaderScreen(context: Context) {
                                                     modifier = Modifier
                                                         .fillMaxWidth()
                                                         .background(
-                                                            color = if (verse.number == currentVerse) themeHighlight else Color.Transparent,
+                                                            color = when {
+                                                                verse.number == highlightedVerseNumber && annotation?.highlighted == true -> themeAccent.copy(alpha = 0.24f)
+                                                                verse.number == highlightedVerseNumber -> themeHighlight
+                                                                annotation?.highlighted == true -> themeAccent.copy(alpha = 0.14f)
+                                                                annotation?.bookmarked == true || !annotation?.noteMarkdown.isNullOrBlank() -> themeAccent.copy(alpha = 0.08f)
+                                                                else -> Color.Transparent
+                                                            },
                                                             shape = RoundedCornerShape(8.dp)
                                                         )
                                                         .pointerInput(verse.number, verse.text) {
@@ -821,6 +1179,29 @@ private fun ReaderScreen(context: Context) {
                                                         }
                                                     )
                                                     DropdownMenuItem(
+                                                        text = { Text(if (annotation?.bookmarked == true) "Remove bookmark" else "Bookmark verse", color = MenuTextColor) },
+                                                        onClick = {
+                                                            verseMenuExpanded = false
+                                                            setVerseBookmark(currentBook, currentChapter, verse.number, annotation?.bookmarked != true)
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text(if (annotation?.highlighted == true) "Remove highlight" else "Highlight verse", color = MenuTextColor) },
+                                                        onClick = {
+                                                            verseMenuExpanded = false
+                                                            setVerseHighlight(currentBook, currentChapter, verse.number, annotation?.highlighted != true)
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Edit note", color = MenuTextColor) },
+                                                        onClick = {
+                                                            verseMenuExpanded = false
+                                                            refreshNoteEditor(VerseReference(currentBook, currentChapter, verse.number))
+                                                            librarySection = LibrarySection.Notes
+                                                            currentPage = ReaderPage.Search
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
                                                         text = { Text("Open in BibleGateway", color = MenuTextColor) },
                                                         onClick = {
                                                             verseMenuExpanded = false
@@ -843,7 +1224,10 @@ private fun ReaderScreen(context: Context) {
 
                         ReaderPage.Search -> {
                             Column(
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(searchScrollState)
+                                    .padding(bottom = CONTENT_BOTTOM_PADDING.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 Text(
@@ -889,7 +1273,9 @@ private fun ReaderScreen(context: Context) {
                                 Text(status, color = themeAccent.copy(alpha = 0.78f))
 
                                 LazyColumn(
-                                    modifier = Modifier.fillMaxSize(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(320.dp),
                                     verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
                                     items(searchResults) { result ->
@@ -947,6 +1333,165 @@ private fun ReaderScreen(context: Context) {
                                         }
                                     }
                                 }
+
+                                val activeReference = selectedLibraryVerse ?: VerseReference(currentBook, currentChapter, currentVerse)
+                                val activeAnnotation = annotationFor(activeReference.book, activeReference.chapter, activeReference.verse)
+                                val bookmarks = bookmarkedAnnotations()
+                                val recentHistory = readingHistory.take(20)
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .border(1.dp, themeBorder, RoundedCornerShape(12.dp))
+                                        .background(themeHighlight.copy(alpha = 0.14f), RoundedCornerShape(12.dp))
+                                        .padding(12.dp)
+                                ) {
+                                    Button(
+                                        enabled = !isBusy && selectedVersion != null,
+                                        onClick = { loadRandomChapter() },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = themeAccent,
+                                            contentColor = contentOnAccent
+                                        ),
+                                        border = BorderStroke(1.dp, themeBorder)
+                                    ) {
+                                        Text("Random")
+                                    }
+                                }
+
+                                SearchLibraryContent(
+                                    context = context,
+                                    librarySection = librarySection,
+                                    bookmarks = bookmarks,
+                                    recentHistory = recentHistory,
+                                    activeReference = activeReference,
+                                    activeAnnotation = activeAnnotation,
+                                    themeAccent = themeAccent,
+                                    themeBorder = themeBorder,
+                                    themeHighlight = themeHighlight,
+                                    borderNeutral = borderNeutral,
+                                    panelColor = panelColor,
+                                    contentSecondary = contentSecondary,
+                                    onOpenVerse = { book, chapter, verse ->
+                                        currentBook = book
+                                        currentChapter = chapter
+                                        currentVerse = verse
+                                        currentPage = ReaderPage.Scripture
+                                        loadChapter()
+                                    },
+                                    onEditVerse = { reference ->
+                                        refreshNoteEditor(reference)
+                                        librarySection = LibrarySection.Notes
+                                    },
+                                    onSwitchSection = { section ->
+                                        librarySection = section
+                                        persistLibraryState(section)
+                                    },
+                                    notesContent = {
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(fontWeight = FontWeight.Bold)) }) {
+                                                    Icon(Icons.Outlined.FormatBold, contentDescription = "Bold", tint = themeAccent)
+                                                }
+                                                IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(fontStyle = FontStyle.Italic)) }) {
+                                                    Icon(Icons.Outlined.FormatItalic, contentDescription = "Italic", tint = themeAccent)
+                                                }
+                                                IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(textDecoration = TextDecoration.Underline)) }) {
+                                                    Icon(Icons.Outlined.FormatUnderlined, contentDescription = "Underline", tint = themeAccent)
+                                                }
+                                                IconButton(onClick = { noteEditorState.toggleCodeSpan() }) {
+                                                    Icon(Icons.Outlined.Code, contentDescription = "Code", tint = themeAccent)
+                                                }
+                                                IconButton(onClick = { noteEditorState.toggleUnorderedList() }) {
+                                                    Icon(Icons.AutoMirrored.Outlined.FormatListBulleted, contentDescription = "Bulleted list", tint = themeAccent)
+                                                }
+                                                IconButton(onClick = { noteEditorState.toggleOrderedList() }) {
+                                                    Icon(Icons.Outlined.FormatListNumbered, contentDescription = "Numbered list", tint = themeAccent)
+                                                }
+                                            }
+
+                                            OutlinedRichTextEditor(
+                                                state = noteEditorState,
+                                                modifier = Modifier.fillMaxWidth(),
+                                                minLines = 8,
+                                                textStyle = androidx.compose.ui.text.TextStyle(
+                                                    fontFamily = selectedFontFamily(),
+                                                    fontSize = fontSizeSp.sp,
+                                                    color = contentPrimary
+                                                ),
+                                                label = { Text("Rich markdown note", color = contentSecondary) },
+                                                placeholder = { Text("Write a formatted note", color = contentSecondary) }
+                                            )
+
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Button(
+                                                    onClick = { saveSelectedNote() },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = themeAccent,
+                                                        contentColor = contentOnAccent
+                                                    )
+                                                ) { Text("Save note") }
+                                                Button(
+                                                    onClick = {
+                                                        setVerseBookmark(activeReference.book, activeReference.chapter, activeReference.verse, activeAnnotation?.bookmarked != true)
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = themeHighlight,
+                                                        contentColor = contentOnAccent
+                                                    )
+                                                ) { Text(if (activeAnnotation?.bookmarked == true) "Unbookmark" else "Bookmark") }
+                                                Button(
+                                                    onClick = {
+                                                        setVerseHighlight(activeReference.book, activeReference.chapter, activeReference.verse, activeAnnotation?.highlighted != true)
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = themeHighlight,
+                                                        contentColor = contentOnAccent
+                                                    )
+                                                ) { Text(if (activeAnnotation?.highlighted == true) "Unhighlight" else "Highlight") }
+                                                IconButton(onClick = { shareSelectedMarkdown() }) {
+                                                    Icon(Icons.Outlined.Share, contentDescription = "Share note", tint = themeAccent)
+                                                }
+                                            }
+                                        }
+                                    }
+                                )
+                                }
+                            }
+
+                        ReaderPage.Library -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(libraryScrollState)
+                                    .padding(bottom = CONTENT_BOTTOM_PADDING.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Text("Library moved to Search", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                                Text(
+                                    text = "Use Search to browse bookmarks, history, and notes.",
+                                    color = contentSecondary
+                                )
+                                Button(
+                                    onClick = { currentPage = ReaderPage.Search },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = themeAccent,
+                                        contentColor = contentOnAccent
+                                    ),
+                                    border = BorderStroke(1.dp, themeBorder)
+                                ) {
+                                    Text("Open Search")
+                                }
                             }
                         }
 
@@ -986,6 +1531,15 @@ private fun ReaderScreen(context: Context) {
                                     }
                                 }
 
+                                selectedVersion?.copyright?.let { copyrightText ->
+                                    Text(
+                                        text = copyrightText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = contentSecondary,
+                                        modifier = Modifier.padding(start = 4.dp)
+                                    )
+                                }
+
                                 Box {
                                     Button(
                                         enabled = !isBusy,
@@ -1006,7 +1560,9 @@ private fun ReaderScreen(context: Context) {
                                             contentColor = themeAccent
                                         ),
                                         border = BorderStroke(1.dp, themeBorder)
-                                    ) { Text("Refresh sources") }
+                                    ) {
+                                        Text("Refresh sources")
+                                    }
 
                                     DropdownMenu(
                                         expanded = remoteExpanded,
@@ -1035,66 +1591,99 @@ private fun ReaderScreen(context: Context) {
                                     }
                                 }
 
-                                Text("Theme", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                                Text("Appearance", style = MaterialTheme.typography.titleMedium, color = themeAccent)
 
+                                Text("Theme mode", color = contentSecondary)
+                                Slider(
+                                    value = themeModePreference.ordinal.toFloat(),
+                                    onValueChange = { value ->
+                                        themeModePreference = ThemeModePreference.entries[value.roundToInt().coerceIn(0, ThemeModePreference.entries.lastIndex)]
+                                        scope.launch { prefs.saveThemeMode(themeModePreference) }
+                                    },
+                                    valueRange = 0f..2f,
+                                    steps = 1,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = themeAccent,
+                                        activeTrackColor = themeAccent,
+                                        activeTickColor = themeAccent,
+                                        inactiveTrackColor = themeAccent.copy(alpha = 0.28f),
+                                        inactiveTickColor = themeAccent.copy(alpha = 0.28f)
+                                    )
+                                )
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    listOf("Light", "System", "Dark").forEachIndexed { index, label ->
+                                        Text(
+                                            text = label,
+                                            color = if (themeModePreference.ordinal == index) themeAccent else contentSecondary
+                                        )
+                                    }
+                                }
+
+                                Text(
+                                    text = if (followsSystem) "Following your device appearance. Drag the slider to force light or dark." else "Follow system to match the device theme automatically.",
+                                    color = contentSecondary
+                                )
+
+                                Text("Accent", style = MaterialTheme.typography.bodyMedium, color = themeAccent)
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Use Android primary accent", color = themeAccent)
+                                    Switch(
+                                        checked = useAndroidPrimaryTheme,
+                                        onCheckedChange = {
+                                            useAndroidPrimaryTheme = it
+                                            scope.launch { prefs.saveTheme(themeColorIndex, useAndroidPrimaryTheme) }
+                                        }
+                                    )
+                                }
+
+                                Text(
+                                    text = if (useAndroidPrimaryTheme) "Android primary is active. Pick a swatch to keep a fallback when it is off." else "Choose an accent color.",
+                                    color = contentSecondary
+                                )
+
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    ThemeAccentOptions.chunked(5).forEachIndexed { rowIndex, row ->
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
-                                            Text("Use Android primary theme color", color = themeAccent)
-                                            Switch(
-                                                checked = useAndroidPrimaryTheme,
-                                                onCheckedChange = {
-                                                    useAndroidPrimaryTheme = it
-                                                    scope.launch { prefs.saveTheme(themeColorIndex, useAndroidPrimaryTheme) }
-                                                }
-                                            )
-                                        }
-
-                                        Text(
-                                            text = if (useAndroidPrimaryTheme) "Android primary is active. Pick a swatch to keep a fallback when it is off." else "Choose one of 10 subtle theme colors.",
-                                            color = themeAccent.copy(alpha = 0.78f)
-                                        )
-
-                                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            ThemeAccentOptions.chunked(5).forEachIndexed { rowIndex, row ->
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            row.forEachIndexed { columnIndex, swatch ->
+                                                val swatchIndex = rowIndex * 5 + columnIndex
+                                                val selected = swatchIndex == themeColorIndex
+                                                Box(
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .height(42.dp)
+                                                        .background(swatch, RoundedCornerShape(12.dp))
+                                                        .border(
+                                                            1.dp,
+                                                            if (selected) themeBorder else borderNeutral,
+                                                            RoundedCornerShape(12.dp)
+                                                        )
+                                                        .pointerInput(swatchIndex, useAndroidPrimaryTheme) {
+                                                            detectTapGestures(onTap = {
+                                                                themeColorIndex = swatchIndex
+                                                                scope.launch { prefs.saveTheme(themeColorIndex, useAndroidPrimaryTheme) }
+                                                            })
+                                                        },
+                                                    contentAlignment = Alignment.Center
                                                 ) {
-                                                    row.forEachIndexed { columnIndex, swatch ->
-                                                        val swatchIndex = rowIndex * 5 + columnIndex
-                                                        val selected = swatchIndex == themeColorIndex
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .weight(1f)
-                                                                .height(42.dp)
-                                                                .background(swatch, RoundedCornerShape(12.dp))
-                                                                .border(
-                                                                    1.dp,
-                                                                    if (selected) themeBorder else Color(0xFF2C3130),
-                                                                    RoundedCornerShape(12.dp)
-                                                                )
-                                                                .pointerInput(swatchIndex, useAndroidPrimaryTheme) {
-                                                                    detectTapGestures(onTap = {
-                                                                        themeColorIndex = swatchIndex
-                                                                        scope.launch { prefs.saveTheme(themeColorIndex, useAndroidPrimaryTheme) }
-                                                                    })
-                                                                },
-                                                            contentAlignment = Alignment.Center
-                                                        ) {
-                                                            Text(
-                                                                text = if (selected) "✓" else "",
-                                                                color = Color.White.copy(alpha = if (selected) 0.95f else 0f)
-                                                            )
-                                                        }
-                                                    }
+                                                    Text(
+                                                        text = if (selected) "✓" else "",
+                                                        color = contentOnAccent.copy(alpha = if (selected) 0.95f else 0f)
+                                                    )
                                                 }
                                             }
                                         }
+                                    }
+                                }
 
-                                        Text("Reader style", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                                Text("Reader style", style = MaterialTheme.typography.titleMedium, color = themeAccent)
 
                                         Text("Font family", color = themeAccent.copy(alpha = 0.78f))
                                         Box {
@@ -1104,16 +1693,38 @@ private fun ReaderScreen(context: Context) {
                                                     .border(1.dp, themeBorder, RoundedCornerShape(8.dp))
                                                     .background(themeHighlight, RoundedCornerShape(8.dp))
                                             ) {
-                                                Text("${fontFamilyLabel(fontFamilyKey, fontOptions)} ▼", color = themeAccent)
+                                                Text("${selectedFontOption()?.label ?: fontFamilyLabel(fontFamilyKey, fontOptions)} ▼", color = themeAccent)
                                             }
                                             DropdownMenu(
                                                 expanded = fontFamilyExpanded,
                                                 onDismissRequest = { fontFamilyExpanded = false },
                                                 containerColor = MenuBackgroundColor
                                             ) {
-                                                fontOptions.forEach { option ->
+                                                val builtInFonts = fontOptions.filterNot { it.key.startsWith("custom:") }
+                                                val customFonts = fontOptions.filter { it.key.startsWith("custom:") }
+                                                Text(
+                                                    text = "Built-in fonts",
+                                                    color = MenuTextColor.copy(alpha = 0.65f),
+                                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                                )
+                                                builtInFonts.forEach { option ->
+                                                    val selected = option.key == fontFamilyKey
                                                     DropdownMenuItem(
-                                                        text = { Text(option.label, color = MenuTextColor) },
+                                                        text = {
+                                                            Column {
+                                                                Text(option.label, color = MenuTextColor)
+                                                                Text(
+                                                                    "The quick brown fox jumps over the lazy dog.",
+                                                                    color = MenuTextColor.copy(alpha = 0.7f),
+                                                                    fontFamily = option.family,
+                                                                    fontSize = 12.sp,
+                                                                    maxLines = 1
+                                                                )
+                                                            }
+                                                        },
+                                                        trailingIcon = {
+                                                            Text(if (selected) "✓" else "", color = themeAccent)
+                                                        },
                                                         onClick = {
                                                             fontFamilyExpanded = false
                                                             fontFamilyKey = option.key
@@ -1121,6 +1732,39 @@ private fun ReaderScreen(context: Context) {
                                                         }
                                                     )
                                                 }
+                                                if (customFonts.isNotEmpty()) {
+                                                    Text(
+                                                        text = "Imported fonts",
+                                                        color = MenuTextColor.copy(alpha = 0.65f),
+                                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                                    )
+                                                    customFonts.forEach { option ->
+                                                        val selected = option.key == fontFamilyKey
+                                                        DropdownMenuItem(
+                                                            text = {
+                                                                Column {
+                                                                    Text(option.label, color = MenuTextColor)
+                                                                    Text(
+                                                                        "The quick brown fox jumps over the lazy dog.",
+                                                                        color = MenuTextColor.copy(alpha = 0.7f),
+                                                                        fontFamily = option.family,
+                                                                        fontSize = 12.sp,
+                                                                        maxLines = 1
+                                                                    )
+                                                                }
+                                                            },
+                                                            trailingIcon = {
+                                                                Text(if (selected) "✓" else "", color = themeAccent)
+                                                            },
+                                                            onClick = {
+                                                                fontFamilyExpanded = false
+                                                                fontFamilyKey = option.key
+                                                                scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                                HorizontalDivider(color = themeAccent.copy(alpha = 0.18f))
                                                 DropdownMenuItem(
                                                     text = { Text("Add font from file…", color = MenuTextColor) },
                                                     onClick = {
@@ -1156,6 +1800,12 @@ private fun ReaderScreen(context: Context) {
                                         fontFamily = selectedFontFamily()
                                     )
                                 }
+
+                                Text(
+                                    text = "Selected font: ${selectedFontOption()?.label ?: fontFamilyLabel(fontFamilyKey, fontOptions)}",
+                                    color = themeAccent.copy(alpha = 0.72f),
+                                    fontSize = 13.sp
+                                )
 
                                 Text("Size: ${fontSizeSp.toInt()}px", color = themeAccent.copy(alpha = 0.78f))
                                 Slider(
@@ -1235,21 +1885,23 @@ private fun ReaderScreen(context: Context) {
                 horizontalArrangement = Arrangement.spacedBy(0.dp)
             ) {
                 Button(
-                    onClick = { currentPage = ReaderPage.Search },
+                    onClick = {
+                        currentPage = ReaderPage.Search
+                    },
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
                     shape = RoundedCornerShape(0.dp),
                     border = BorderStroke(
                         1.dp,
-                        if (currentPage == ReaderPage.Search) themeBorder else Color(0xFF3A3F3C)
+                        if (currentPage == ReaderPage.Search) themeBorder else navInactiveBorder
                     ),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (currentPage == ReaderPage.Search) themeHighlight else Color(0xFF121212),
-                        contentColor = if (currentPage == ReaderPage.Search) Color(0xFFF2F6F4) else themeAccent.copy(alpha = 0.72f)
+                        containerColor = if (currentPage == ReaderPage.Search) themeHighlight else navInactiveContainer,
+                        contentColor = if (currentPage == ReaderPage.Search) contentOnAccent else themeAccent.copy(alpha = 0.72f)
                     )
                 ) {
-                    Text("Search")
+                    Text("Library")
                 }
                 Button(
                     onClick = { currentPage = ReaderPage.Scripture },
@@ -1259,11 +1911,11 @@ private fun ReaderScreen(context: Context) {
                     shape = RoundedCornerShape(0.dp),
                     border = BorderStroke(
                         1.dp,
-                        if (currentPage == ReaderPage.Scripture) themeBorder else Color(0xFF3A3F3C)
+                        if (currentPage == ReaderPage.Scripture) themeBorder else navInactiveBorder
                     ),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (currentPage == ReaderPage.Scripture) themeHighlight else Color(0xFF121212),
-                        contentColor = if (currentPage == ReaderPage.Scripture) Color(0xFFF2F6F4) else themeAccent.copy(alpha = 0.72f)
+                        containerColor = if (currentPage == ReaderPage.Scripture) themeHighlight else navInactiveContainer,
+                        contentColor = if (currentPage == ReaderPage.Scripture) contentOnAccent else themeAccent.copy(alpha = 0.72f)
                     )
                 ) {
                     Text("Scripture")
@@ -1273,7 +1925,114 @@ private fun ReaderScreen(context: Context) {
     }
 }
 
+}
+
 private fun themeAccentBackground(accent: Color): Color = accent.copy(alpha = 0.12f)
+
+@Composable
+private fun SearchLibraryContent(
+    context: Context,
+    librarySection: LibrarySection,
+    bookmarks: List<VerseAnnotation>,
+    recentHistory: List<ReadingHistoryEntry>,
+    activeReference: VerseReference,
+    activeAnnotation: VerseAnnotation?,
+    themeAccent: Color,
+    themeBorder: Color,
+    themeHighlight: Color,
+    borderNeutral: Color,
+    panelColor: Color,
+    contentSecondary: Color,
+    onOpenVerse: (Int, Int, Int) -> Unit,
+    onEditVerse: (VerseReference) -> Unit,
+    onSwitchSection: (LibrarySection) -> Unit,
+    notesContent: @Composable () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(
+                LibrarySection.Bookmarks to "Bookmarks",
+                LibrarySection.History to "History",
+                LibrarySection.Notes to "Notes"
+            ).forEach { (section, label) ->
+                val selected = librarySection == section
+                TextButton(
+                    onClick = { onSwitchSection(section) },
+                    modifier = Modifier
+                        .border(1.dp, if (selected) themeBorder else borderNeutral, RoundedCornerShape(999.dp))
+                        .background(if (selected) themeHighlight else panelColor, RoundedCornerShape(999.dp))
+                ) {
+                    Text(label, color = if (selected) themeAccent else contentSecondary)
+                }
+            }
+        }
+
+        when (librarySection) {
+            LibrarySection.Bookmarks -> {
+                Text("Bookmarks", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                if (bookmarks.isEmpty()) {
+                    Text("No bookmarks or notes yet.", color = contentSecondary)
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        bookmarks.forEach { item ->
+                            val preview = item.noteMarkdown.take(120).replace('\n', ' ')
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(1.dp, themeBorder, RoundedCornerShape(10.dp))
+                                    .background(themeHighlight.copy(alpha = 0.14f), RoundedCornerShape(10.dp))
+                                    .padding(10.dp)
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text("${bookName(item.book)} ${item.chapter}:${item.verse}", color = themeAccent)
+                                    if (preview.isNotBlank()) {
+                                        Text(preview, color = contentSecondary)
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(onClick = { onOpenVerse(item.book, item.chapter, item.verse) }) { Text("Open") }
+                                        Button(onClick = { onEditVerse(VerseReference(item.book, item.chapter, item.verse)) }) { Text("Edit") }
+                                        Button(onClick = {
+                                            shareText(context, "${bookName(item.book)} ${item.chapter}:${item.verse}", item.noteMarkdown.ifBlank { "Bookmark from OnlyJesus" })
+                                        }) { Text("Share") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            LibrarySection.History -> {
+                Text("Reading history", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                if (recentHistory.isEmpty()) {
+                    Text("Your recent chapters will show up here.", color = contentSecondary)
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        recentHistory.forEach { item ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(1.dp, borderNeutral, RoundedCornerShape(10.dp))
+                                    .background(panelColor, RoundedCornerShape(10.dp))
+                                    .padding(10.dp)
+                            ) {
+                                TextButton(onClick = { onOpenVerse(item.book, item.chapter, item.verse) }) {
+                                    Text("${bookName(item.book)} ${item.chapter}:${item.verse}")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            LibrarySection.Notes -> {
+                Text("Notes", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                Text("${bookName(activeReference.book)} ${activeReference.chapter}:${activeReference.verse}", color = contentSecondary)
+                notesContent()
+            }
+        }
+    }
+}
 
 @Composable
 private fun ChapterPreviewPane(
@@ -1348,15 +2107,28 @@ private data class ChapterLoad(
     val chapterText: List<Verse>
 )
 data class ChapterLocation(val book: Int, val chapter: Int)
-data class InstalledVersion(val label: String, val file: File)
+data class InstalledVersion(val label: String, val file: File, val copyright: String? = null)
 data class FontOption(val key: String, val label: String, val family: FontFamily)
-data class BibleSource(val owner: String, val repo: String, val branch: String) {
+data class BibleSource(
+    val owner: String,
+    val repo: String,
+    val branch: String,
+    val pathPrefix: String? = null,
+    val pathSuffix: String? = null,
+    val bundledAssetDir: String? = null
+) {
     val key: String = "${owner}_${repo}_$branch"
     val label: String = "$owner/$repo"
 }
 
-data class RemoteVersion(val source: BibleSource, val branch: String, val path: String, val sizeBytes: Long) {
-    val displayName: String = "${source.label}: ${displayNameFromPath(path)}"
+data class RemoteVersion(
+    val source: BibleSource,
+    val branch: String,
+    val path: String,
+    val sizeBytes: Long,
+    val displayNameOverride: String? = null
+) {
+    val displayName: String = displayNameOverride ?: "${source.label}: ${displayNameFromPath(path)}"
     val sizeMb: String = String.format("%.1f", sizeBytes / 1024.0 / 1024.0)
     val downloadUrl: String = "https://raw.githubusercontent.com/${source.owner}/${source.repo}/$branch/$path"
 }
@@ -1365,10 +2137,16 @@ private data class ReaderSettings(
     val versionPath: String,
     val book: Int,
     val chapter: Int,
+    val verse: Int,
     val fontFamily: String,
     val fontSize: Float,
     val themeColorIndex: Int,
-    val useAndroidPrimaryTheme: Boolean
+    val themeMode: ThemeModePreference,
+    val useAndroidPrimaryTheme: Boolean,
+    val librarySection: LibrarySection,
+    val libraryBook: Int,
+    val libraryChapter: Int,
+    val libraryVerse: Int
 )
 
 private class ReaderPreferencesStore(private val context: Context) {
@@ -1376,10 +2154,16 @@ private class ReaderPreferencesStore(private val context: Context) {
     private val versionNameKey = stringPreferencesKey("version_name")
     private val bookKey = intPreferencesKey("book")
     private val chapterKey = intPreferencesKey("chapter")
+    private val verseKey = intPreferencesKey("verse")
     private val fontFamilyKey = stringPreferencesKey("font_family")
     private val fontSizeKey = floatPreferencesKey("font_size")
     private val themeColorIndexKey = intPreferencesKey("theme_color_index")
+    private val themeModeKey = stringPreferencesKey("theme_mode")
     private val useAndroidPrimaryThemeKey = booleanPreferencesKey("use_android_primary_theme")
+    private val librarySectionKey = stringPreferencesKey("library_section")
+    private val libraryBookKey = intPreferencesKey("library_book")
+    private val libraryChapterKey = intPreferencesKey("library_chapter")
+    private val libraryVerseKey = intPreferencesKey("library_verse")
 
     suspend fun load(): ReaderSettings {
         val prefs = context.dataStore.data.first()
@@ -1387,10 +2171,20 @@ private class ReaderPreferencesStore(private val context: Context) {
             versionPath = prefs[versionPathKey] ?: "",
             book = prefs[bookKey] ?: 1,
             chapter = prefs[chapterKey] ?: 1,
+            verse = prefs[verseKey] ?: 1,
             fontFamily = prefs[fontFamilyKey] ?: "serif",
             fontSize = prefs[fontSizeKey] ?: 20f,
             themeColorIndex = prefs[themeColorIndexKey] ?: 0,
-            useAndroidPrimaryTheme = prefs[useAndroidPrimaryThemeKey] ?: false
+            themeMode = prefs[themeModeKey]?.let { raw ->
+                runCatching { ThemeModePreference.valueOf(raw) }.getOrNull()
+            } ?: ThemeModePreference.System,
+            useAndroidPrimaryTheme = prefs[useAndroidPrimaryThemeKey] ?: false,
+            librarySection = prefs[librarySectionKey]?.let { raw ->
+                runCatching { LibrarySection.valueOf(raw) }.getOrNull()
+            } ?: LibrarySection.Bookmarks,
+            libraryBook = prefs[libraryBookKey] ?: 0,
+            libraryChapter = prefs[libraryChapterKey] ?: 0,
+            libraryVerse = prefs[libraryVerseKey] ?: 0
         )
     }
 
@@ -1401,10 +2195,11 @@ private class ReaderPreferencesStore(private val context: Context) {
         }
     }
 
-    suspend fun savePosition(book: Int, chapter: Int) {
+    suspend fun savePosition(book: Int, chapter: Int, verse: Int) {
         context.dataStore.edit {
             it[bookKey] = book
             it[chapterKey] = chapter
+            it[verseKey] = verse
         }
     }
 
@@ -1419,6 +2214,21 @@ private class ReaderPreferencesStore(private val context: Context) {
         context.dataStore.edit {
             it[themeColorIndexKey] = themeColorIndex
             it[useAndroidPrimaryThemeKey] = useAndroidPrimaryTheme
+        }
+    }
+
+    suspend fun saveThemeMode(themeMode: ThemeModePreference) {
+        context.dataStore.edit {
+            it[themeModeKey] = themeMode.name
+        }
+    }
+
+    suspend fun saveLibraryState(section: LibrarySection, reference: VerseReference?) {
+        context.dataStore.edit {
+            it[librarySectionKey] = section.name
+            it[libraryBookKey] = reference?.book ?: 0
+            it[libraryChapterKey] = reference?.chapter ?: 0
+            it[libraryVerseKey] = reference?.verse ?: 0
         }
     }
 }
@@ -1466,14 +2276,21 @@ private class BibleRepository(private val context: Context) {
 
     fun installedVersions(): List<InstalledVersion> = versionsDir
         .walkTopDown()
-        .filter { it.isFile && it.extension.lowercase() == "json" }
+        .filter { it.isFile && (it.extension.lowercase() == "json" || it.extension.lowercase() == "xml") }
+        .groupBy { file ->
+            (file.parentFile?.name.orEmpty()) to file.nameWithoutExtension.lowercase()
+        }
+        .values
+        .mapNotNull { files ->
+            files.sortedWith(compareBy<File> { it.extension.lowercase() != "xml" }.thenBy { it.absolutePath.lowercase() }).firstOrNull()
+        }
         .sortedBy { it.absolutePath.lowercase() }
         .map { file ->
-            val sourceLabel = sourceLabelFromPath(file)
-            val displayName = displayNameFromPath(file.name)
+            val displayName = xmlBibleNameFromFile(file) ?: displayNameFromPath(file.name)
             InstalledVersion(
-                label = if (sourceLabel == null) displayName else "$sourceLabel: $displayName",
-                file = file
+                label = displayName,
+                file = file,
+                copyright = xmlBibleCopyrightFromFile(file)
             )
         }
         .toList()
@@ -1481,19 +2298,54 @@ private class BibleRepository(private val context: Context) {
     suspend fun fetchRemoteVersions(): List<RemoteVersion> = withContext(Dispatchers.IO) {
         val versions = mutableListOf<RemoteVersion>()
         for (source in BibleSources) {
-            val fetched = runCatching { fetchTree(source, source.branch) }.getOrDefault(emptyList())
-            versions.addAll(fetched)
+            if (source.bundledAssetDir != null) {
+                val assetPaths = context.assets.list(source.bundledAssetDir).orEmpty()
+                assetPaths
+                    .filter { it.lowercase().endsWith(".xml") }
+                    .forEach { assetName ->
+                        val assetPath = "${source.bundledAssetDir}/$assetName"
+                        versions += RemoteVersion(
+                            source = source,
+                            branch = source.branch,
+                            path = assetPath,
+                            sizeBytes = bundledAssetSize(assetPath),
+                            displayNameOverride = xmlBibleNameFromAsset(assetPath)
+                        )
+                    }
+            } else {
+                val fetched = runCatching { fetchTree(source, source.branch) }.getOrDefault(emptyList())
+                versions.addAll(fetched)
+            }
         }
         versions.sortedBy { it.displayName.lowercase() }
     }
 
     suspend fun installRemoteVersion(remote: RemoteVersion): InstalledVersion = withContext(Dispatchers.IO) {
-        val target = File(File(versionsDir, remote.source.key), remote.path.substringAfterLast('/'))
+        val targetName = remote.path.substringAfterLast('/')
+        val target = File(File(versionsDir, remote.source.key), targetName)
         target.parentFile?.mkdirs()
         if (!target.exists()) {
-            downloadFile(remote.downloadUrl, target)
+            if (remote.path.lowercase().endsWith(".xml")) {
+                if (remote.source.bundledAssetDir != null) {
+                    context.assets.open(remote.path).use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    }
+                } else {
+                    downloadFile(remote.downloadUrl, target)
+                }
+                val legacyJson = File(target.parentFile, target.nameWithoutExtension + ".json")
+                if (legacyJson.exists()) {
+                    legacyJson.delete()
+                }
+            } else {
+                downloadFile(remote.downloadUrl, target)
+            }
         }
-        InstalledVersion(label = remote.displayName, file = target)
+        InstalledVersion(
+            label = remote.displayName,
+            file = target,
+            copyright = xmlBibleCopyrightFromFile(target)
+        )
     }
 
     private fun fetchTree(source: BibleSource, branch: String): List<RemoteVersion> {
@@ -1508,8 +2360,9 @@ private class BibleRepository(private val context: Context) {
             if (node.optString("type") != "blob") continue
             val path = node.optString("path")
             val lower = path.lowercase()
-            val isJsonVersion = lower.startsWith("json/t_") && lower.endsWith(".json")
-            if (!isJsonVersion) continue
+            val matchesPrefix = source.pathPrefix?.let { path.startsWith(it) } ?: true
+            val matchesSuffix = source.pathSuffix?.let { lower.endsWith(it.lowercase()) } ?: true
+            if (!matchesPrefix || !matchesSuffix) continue
             versions += RemoteVersion(
                 source = source,
                 branch = branch,
@@ -1523,6 +2376,73 @@ private class BibleRepository(private val context: Context) {
     private fun sourceLabelFromPath(file: File): String? {
         val sourceKey = file.parentFile?.name ?: return null
         return BibleSources.firstOrNull { it.key == sourceKey }?.label
+    }
+
+    fun xmlBibleCopyrightFromFile(file: File): String? {
+        return try {
+            file.inputStream().use { input ->
+                xmlBibleCopyrightFromInput(input)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun xmlBibleNameFromAsset(assetPath: String): String? {
+        return try {
+            context.assets.open(assetPath).use { input ->
+                xmlBibleNameFromInput(input)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun xmlBibleNameFromFile(file: File): String? {
+        return try {
+            file.inputStream().use { input ->
+                xmlBibleNameFromInput(input)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun xmlBibleCopyrightFromInput(input: java.io.InputStream): String? {
+        val parser = XmlPullParserFactory.newInstance().newPullParser()
+        parser.setInput(InputStreamReader(input, Charsets.UTF_8))
+        var event = parser.eventType
+        while (event != XmlPullParser.START_TAG && event != XmlPullParser.END_DOCUMENT) {
+            event = parser.next()
+        }
+        if (event != XmlPullParser.START_TAG) return null
+        if (parser.name != "bible") return null
+        return parser.getAttributeValue(null, "copyright")
+    }
+
+    private fun xmlBibleNameFromInput(input: java.io.InputStream): String? {
+        val parser = XmlPullParserFactory.newInstance().newPullParser()
+        parser.setInput(InputStreamReader(input, Charsets.UTF_8))
+        var event = parser.eventType
+        while (event != XmlPullParser.START_TAG && event != XmlPullParser.END_DOCUMENT) {
+            event = parser.next()
+        }
+        if (event != XmlPullParser.START_TAG) return null
+        if (parser.name != "bible") return null
+        return parser.getAttributeValue(null, "translation") ?: parser.getAttributeValue(null, "name")
+    }
+
+    private fun bundledAssetSize(assetPath: String): Long {
+        return context.assets.open(assetPath).use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var total = 0L
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                total += read
+            }
+            total
+        }
     }
 
     private fun queryDisplayName(uri: Uri): String? {
@@ -1585,27 +2505,253 @@ private class BibleRepository(private val context: Context) {
     }
 }
 
+private fun parseBibleJson(jsonFile: File): JsonBibleData {
+    val root = JSONObject(jsonFile.readText())
+    val resultset = root.optJSONObject("resultset") ?: return JsonBibleData.empty()
+    val rows = resultset.optJSONArray("row") ?: return JsonBibleData.empty()
+
+    val chapterMap = mutableMapOf<ChapterLocation, MutableList<Verse>>()
+    val chapterNumbersByBook = mutableMapOf<Int, MutableSet<Int>>()
+    val verses = mutableListOf<JsonVerseRecord>()
+
+    for (i in 0 until rows.length()) {
+        val row = rows.optJSONObject(i) ?: continue
+        val field = row.optJSONArray("field") ?: continue
+        if (field.length() < 5) continue
+
+        val book = field.optInt(1, 0)
+        val chapter = field.optInt(2, 0)
+        val verse = field.optInt(3, 0)
+        val text = field.optString(4, "")
+        if (book <= 0 || chapter <= 0 || verse <= 0) continue
+
+        verses += JsonVerseRecord(book, chapter, verse, text)
+        chapterMap.getOrPut(ChapterLocation(book, chapter)) { mutableListOf() } += Verse(verse, text)
+        chapterNumbersByBook.getOrPut(book) { mutableSetOf() }.add(chapter)
+    }
+
+    val orderedChapters = chapterMap.keys.sortedWith(compareBy<ChapterLocation> { it.book }.thenBy { it.chapter })
+    val versesByChapter = chapterMap.mapValues { (_, chapterVerses) -> chapterVerses.sortedBy { it.number } }
+    val books = chapterNumbersByBook.keys.sorted()
+    val chaptersByBook = chapterNumbersByBook.mapValues { (_, chapters) -> chapters.sorted() }
+
+    return JsonBibleData(
+        books = books,
+        chaptersByBook = chaptersByBook,
+        orderedChapters = orderedChapters,
+        versesByChapter = versesByChapter,
+        allVerses = verses
+    )
+}
+
+private fun parseBibleXmlIndex(xmlFile: File): XmlBibleIndex {
+    val factory = XmlPullParserFactory.newInstance().apply {
+        isNamespaceAware = false
+    }
+    val parser = factory.newPullParser()
+
+    val chapterRefs = linkedSetOf<ChapterLocation>()
+    val chapterNumbersByBook = mutableMapOf<Int, MutableSet<Int>>()
+
+    var currentBook = 0
+    var currentChapter = 0
+
+    xmlFile.inputStream().use { input ->
+        InputStreamReader(input, Charsets.UTF_8).use { reader ->
+            parser.setInput(reader)
+
+            var eventType = parser.eventType
+            while (eventType != XmlPullParser.END_DOCUMENT) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> when (parser.name) {
+                        "book" -> currentBook = parser.getAttributeValue(null, "number")?.toIntOrNull() ?: currentBook
+                        "chapter" -> {
+                            currentChapter = parser.getAttributeValue(null, "number")?.toIntOrNull() ?: currentChapter
+                            if (currentBook > 0 && currentChapter > 0) {
+                                chapterRefs += ChapterLocation(currentBook, currentChapter)
+                                chapterNumbersByBook.getOrPut(currentBook) { mutableSetOf() }.add(currentChapter)
+                            }
+                        }
+                    }
+                }
+                eventType = parser.next()
+            }
+        }
+    }
+
+    val orderedChapters = chapterRefs.sortedWith(compareBy<ChapterLocation> { it.book }.thenBy { it.chapter })
+    val books = chapterNumbersByBook.keys.sorted()
+    val chaptersByBook = chapterNumbersByBook.mapValues { (_, chapters) -> chapters.sorted() }
+
+    return XmlBibleIndex(
+        books = books,
+        chaptersByBook = chaptersByBook,
+        orderedChapters = orderedChapters
+    )
+}
+
+private fun readBibleXmlChapter(xmlFile: File, book: Int, chapter: Int): List<Verse> {
+    val factory = XmlPullParserFactory.newInstance().apply {
+        isNamespaceAware = false
+    }
+    val parser = factory.newPullParser()
+
+    val verses = mutableListOf<Verse>()
+    var currentBook = 0
+    var currentChapter = 0
+    var currentVerse = 0
+    var verseText = StringBuilder()
+    var inVerse = false
+
+    xmlFile.inputStream().use { input ->
+        InputStreamReader(input, Charsets.UTF_8).use { reader ->
+            parser.setInput(reader)
+
+            var eventType = parser.eventType
+            while (eventType != XmlPullParser.END_DOCUMENT) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> when (parser.name) {
+                        "book" -> currentBook = parser.getAttributeValue(null, "number")?.toIntOrNull() ?: currentBook
+                        "chapter" -> currentChapter = parser.getAttributeValue(null, "number")?.toIntOrNull() ?: currentChapter
+                        "verse" -> {
+                            currentVerse = parser.getAttributeValue(null, "number")?.toIntOrNull()
+                                ?: parser.getAttributeValue(null, "bnumber")?.toIntOrNull()
+                                ?: 0
+                            verseText = StringBuilder()
+                            inVerse = true
+                        }
+                    }
+
+                    XmlPullParser.TEXT -> if (inVerse && currentBook == book && currentChapter == chapter) {
+                        verseText.append(parser.text)
+                    }
+
+                    XmlPullParser.END_TAG -> if (parser.name == "verse") {
+                        val text = verseText.toString().trim()
+                        if (currentBook == book && currentChapter == chapter && currentVerse > 0 && text.isNotBlank()) {
+                            verses += Verse(currentVerse, text)
+                        }
+                        inVerse = false
+                    }
+                }
+                eventType = parser.next()
+            }
+        }
+    }
+
+    return verses.sortedBy { it.number }
+}
+
+private fun searchBibleXmlVerses(xmlFile: File, textQuery: String, limit: Int): List<VerseSearchHit> {
+    val query = textQuery.trim().lowercase()
+    if (query.isBlank()) return emptyList()
+
+    val factory = XmlPullParserFactory.newInstance().apply {
+        isNamespaceAware = false
+    }
+    val parser = factory.newPullParser()
+
+    val hits = mutableListOf<VerseSearchHit>()
+    var currentBook = 0
+    var currentChapter = 0
+    var currentVerse = 0
+    var verseText = StringBuilder()
+    var inVerse = false
+
+    xmlFile.inputStream().use { input ->
+        InputStreamReader(input, Charsets.UTF_8).use { reader ->
+            parser.setInput(reader)
+
+            var eventType = parser.eventType
+            while (eventType != XmlPullParser.END_DOCUMENT && hits.size < limit) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> when (parser.name) {
+                        "book" -> currentBook = parser.getAttributeValue(null, "number")?.toIntOrNull() ?: currentBook
+                        "chapter" -> currentChapter = parser.getAttributeValue(null, "number")?.toIntOrNull() ?: currentChapter
+                        "verse" -> {
+                            currentVerse = parser.getAttributeValue(null, "number")?.toIntOrNull()
+                                ?: parser.getAttributeValue(null, "bnumber")?.toIntOrNull()
+                                ?: 0
+                            verseText = StringBuilder()
+                            inVerse = true
+                        }
+                    }
+
+                    XmlPullParser.TEXT -> if (inVerse) {
+                        verseText.append(parser.text)
+                    }
+
+                    XmlPullParser.END_TAG -> if (parser.name == "verse") {
+                        val text = verseText.toString().trim()
+                        if (currentBook > 0 && currentChapter > 0 && currentVerse > 0 && text.lowercase().contains(query)) {
+                            hits += VerseSearchHit(currentBook, currentChapter, currentVerse, text)
+                        }
+                        inVerse = false
+                    }
+                }
+                eventType = parser.next()
+            }
+        }
+    }
+
+    return hits.sortedWith(compareBy<VerseSearchHit> { it.book }.thenBy { it.chapter }.thenBy { it.verse })
+}
+
+private sealed interface BibleCache {
+    val books: List<Int>
+    val chaptersByBook: Map<Int, List<Int>>
+    val orderedChapters: List<ChapterLocation>
+}
+
+private data class JsonBibleData(
+    override val books: List<Int>,
+    override val chaptersByBook: Map<Int, List<Int>>,
+    override val orderedChapters: List<ChapterLocation>,
+    val versesByChapter: Map<ChapterLocation, List<Verse>>,
+    val allVerses: List<JsonVerseRecord>
+) : BibleCache {
+    companion object {
+        fun empty() = JsonBibleData(emptyList(), emptyMap(), emptyList(), emptyMap(), emptyList())
+    }
+}
+
+private data class XmlBibleIndex(
+    override val books: List<Int>,
+    override val chaptersByBook: Map<Int, List<Int>>,
+    override val orderedChapters: List<ChapterLocation>
+) : BibleCache
+
+private data class JsonVerseRecord(val book: Int, val chapter: Int, val verse: Int, val text: String)
+
 private class JsonBibleReader {
-    private val cache = mutableMapOf<String, JsonBibleData>()
+    private val cache = mutableMapOf<String, BibleCache>()
 
     fun availableBooks(jsonFile: File): List<Int> = load(jsonFile).books
 
     fun availableChapters(jsonFile: File, book: Int): List<Int> = load(jsonFile).chaptersByBook[book].orEmpty()
 
     fun searchVersesLike(jsonFile: File, textQuery: String, limit: Int = 100): List<VerseSearchHit> {
-        if (textQuery.isBlank()) return emptyList()
-        val query = textQuery.trim().lowercase()
-        return load(jsonFile).allVerses
-            .asSequence()
-            .filter { it.text.lowercase().contains(query) }
-            .sortedWith(compareBy<JsonVerseRecord> { it.book }.thenBy { it.chapter }.thenBy { it.verse })
-            .take(limit)
-            .map { VerseSearchHit(it.book, it.chapter, it.verse, it.text) }
-            .toList()
+        return when (val data = load(jsonFile)) {
+            is JsonBibleData -> {
+                if (textQuery.isBlank()) return emptyList()
+                val query = textQuery.trim().lowercase()
+                data.allVerses
+                    .asSequence()
+                    .filter { it.text.lowercase().contains(query) }
+                    .sortedWith(compareBy<JsonVerseRecord> { it.book }.thenBy { it.chapter }.thenBy { it.verse })
+                    .take(limit)
+                    .map { VerseSearchHit(it.book, it.chapter, it.verse, it.text) }
+                    .toList()
+            }
+            is XmlBibleIndex -> searchBibleXmlVerses(jsonFile, textQuery, limit)
+        }
     }
 
     fun readChapter(jsonFile: File, book: Int, chapter: Int): List<Verse> {
-        return load(jsonFile).versesByChapter[ChapterLocation(book, chapter)].orEmpty()
+        return when (val data = load(jsonFile)) {
+            is JsonBibleData -> data.versesByChapter[ChapterLocation(book, chapter)].orEmpty()
+            is XmlBibleIndex -> readBibleXmlChapter(jsonFile, book, chapter)
+        }
     }
 
     fun findAdjacent(jsonFile: File, book: Int, chapter: Int, direction: Int): ChapterLocation? {
@@ -1615,63 +2761,16 @@ private class JsonBibleReader {
         return refs.getOrNull(index + direction)
     }
 
-    private fun load(jsonFile: File): JsonBibleData {
+    private fun load(jsonFile: File): BibleCache {
         val cacheKey = "${jsonFile.absolutePath}:${jsonFile.lastModified()}"
-        return cache.getOrPut(cacheKey) { parse(jsonFile) }
-    }
-
-    private fun parse(jsonFile: File): JsonBibleData {
-        val root = JSONObject(jsonFile.readText())
-        val resultset = root.optJSONObject("resultset") ?: return JsonBibleData.empty()
-        val rows = resultset.optJSONArray("row") ?: return JsonBibleData.empty()
-
-        val chapterMap = mutableMapOf<ChapterLocation, MutableList<Verse>>()
-        val chapterNumbersByBook = mutableMapOf<Int, MutableSet<Int>>()
-        val verses = mutableListOf<JsonVerseRecord>()
-
-        for (i in 0 until rows.length()) {
-            val row = rows.optJSONObject(i) ?: continue
-            val field = row.optJSONArray("field") ?: continue
-            if (field.length() < 5) continue
-
-            val book = field.optInt(1, 0)
-            val chapter = field.optInt(2, 0)
-            val verse = field.optInt(3, 0)
-            val text = field.optString(4, "")
-            if (book <= 0 || chapter <= 0 || verse <= 0) continue
-
-            verses += JsonVerseRecord(book, chapter, verse, text)
-            chapterMap.getOrPut(ChapterLocation(book, chapter)) { mutableListOf() } += Verse(verse, text)
-            chapterNumbersByBook.getOrPut(book) { mutableSetOf() }.add(chapter)
-        }
-
-        val orderedChapters = chapterMap.keys.sortedWith(compareBy<ChapterLocation> { it.book }.thenBy { it.chapter })
-        val versesByChapter = chapterMap.mapValues { (_, chapterVerses) -> chapterVerses.sortedBy { it.number } }
-        val books = chapterNumbersByBook.keys.sorted()
-        val chaptersByBook = chapterNumbersByBook.mapValues { (_, chapters) -> chapters.sorted() }
-
-        return JsonBibleData(
-            books = books,
-            chaptersByBook = chaptersByBook,
-            orderedChapters = orderedChapters,
-            versesByChapter = versesByChapter,
-            allVerses = verses
-        )
-    }
-
-    private data class JsonBibleData(
-        val books: List<Int>,
-        val chaptersByBook: Map<Int, List<Int>>,
-        val orderedChapters: List<ChapterLocation>,
-        val versesByChapter: Map<ChapterLocation, List<Verse>>,
-        val allVerses: List<JsonVerseRecord>
-    ) {
-        companion object {
-            fun empty() = JsonBibleData(emptyList(), emptyMap(), emptyList(), emptyMap(), emptyList())
+        return cache.getOrPut(cacheKey) {
+            if (jsonFile.extension.lowercase() == "xml") {
+                parseBibleXmlIndex(jsonFile)
+            } else {
+                parseBibleJson(jsonFile)
+            }
         }
     }
-
-    private data class JsonVerseRecord(val book: Int, val chapter: Int, val verse: Int, val text: String)
 }
 
 fun displayNameFromPath(path: String): String {
