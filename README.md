@@ -2,6 +2,8 @@
 
 OnlyJesus is an Android Bible reader app built with Kotlin and Jetpack Compose.
 
+This project has completely been written by AI. I do not claim right to the code, and I do not take any responsibility for it.
+
 ## License
 
 This project is released under [The Unlicense](https://unlicense.org), which dedicates the software to the public domain.
@@ -18,6 +20,6 @@ From the repository root:
 
 The release APK is generated at:
 
-`app/build/outputs/apk/release/app-release-unsigned.apk`
+`app/build/outputs/apk/release/app-release.apk`
 
-Note: this build output is unsigned and must be signed before it can be installed or distributed as a release artifact.
+Note: the release build is signed with the debug key so it can be installed locally on a device. If you want a distributable production build, replace this with your own release signing config.

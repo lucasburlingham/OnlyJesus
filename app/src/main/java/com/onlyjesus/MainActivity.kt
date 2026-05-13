@@ -1,21 +1,33 @@
 package com.onlyjesus
 
+import android.app.Activity
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +37,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -32,9 +45,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.datastore.preferences.core.edit
@@ -42,6 +59,9 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -52,11 +72,96 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
+private const val CONTENT_BOTTOM_PADDING = 148
+private val MenuBackgroundColor = Color(0xFF111111)
+private val MenuTextColor = Color(0xFFE8E6E3)
+private val BibleSources = listOf(
+    BibleSource(
+        owner = "scrollmapper",
+        repo = "bible_databases",
+        branch = "2024"
+    )
+)
+private val BibleBookNames = listOf(
+    "Genesis",
+    "Exodus",
+    "Leviticus",
+    "Numbers",
+    "Deuteronomy",
+    "Joshua",
+    "Judges",
+    "Ruth",
+    "1 Samuel",
+    "2 Samuel",
+    "1 Kings",
+    "2 Kings",
+    "1 Chronicles",
+    "2 Chronicles",
+    "Ezra",
+    "Nehemiah",
+    "Esther",
+    "Job",
+    "Psalms",
+    "Proverbs",
+    "Ecclesiastes",
+    "Song of Solomon",
+    "Isaiah",
+    "Jeremiah",
+    "Lamentations",
+    "Ezekiel",
+    "Daniel",
+    "Hosea",
+    "Joel",
+    "Amos",
+    "Obadiah",
+    "Jonah",
+    "Micah",
+    "Nahum",
+    "Habakkuk",
+    "Zephaniah",
+    "Haggai",
+    "Zechariah",
+    "Malachi",
+    "Matthew",
+    "Mark",
+    "Luke",
+    "John",
+    "Acts",
+    "Romans",
+    "1 Corinthians",
+    "2 Corinthians",
+    "Galatians",
+    "Ephesians",
+    "Philippians",
+    "Colossians",
+    "1 Thessalonians",
+    "2 Thessalonians",
+    "1 Timothy",
+    "2 Timothy",
+    "Titus",
+    "Philemon",
+    "Hebrews",
+    "James",
+    "1 Peter",
+    "2 Peter",
+    "1 John",
+    "2 John",
+    "3 John",
+    "Jude",
+    "Revelation"
+)
 private val Context.dataStore by preferencesDataStore(name = "reader_settings")
+
+private enum class ReaderPage {
+    Scripture,
+    Search,
+    Settings
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
             AmoledTheme {
                 ReaderScreen(this)
@@ -67,11 +172,29 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun ReaderScreen(context: Context) {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val activity = view.context as? Activity
+        if (activity == null) {
+            onDispose { }
+        } else {
+            val window = activity.window
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.statusBars())
+            onDispose {
+                controller.show(WindowInsetsCompat.Type.statusBars())
+                WindowCompat.setDecorFitsSystemWindows(window, true)
+            }
+        }
+    }
+
     val scope = rememberCoroutineScope()
     val prefs = remember { ReaderPreferencesStore(context) }
     val repository = remember { BibleRepository(context) }
-    val reader = remember { SQLiteBibleReader() }
+    val reader = remember { JsonBibleReader() }
 
+    var currentPage by remember { mutableStateOf(ReaderPage.Scripture) }
     var selectedVersion by remember { mutableStateOf<InstalledVersion?>(null) }
     var currentBook by remember { mutableStateOf(1) }
     var currentChapter by remember { mutableStateOf(1) }
@@ -87,6 +210,7 @@ private fun ReaderScreen(context: Context) {
     var verseExpanded by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val verses = remember { mutableStateListOf<Verse>() }
+    val verseListState = rememberLazyListState()
     val availableBooks = remember { mutableStateListOf<Int>() }
     val availableChapters = remember { mutableStateListOf<Int>() }
     val availableVerses = remember { mutableStateListOf<Int>() }
@@ -99,6 +223,8 @@ private fun ReaderScreen(context: Context) {
         "mono" -> FontFamily.Monospace
         else -> FontFamily.Serif
     }
+
+    fun scriptureReference(): String = "${bookName(currentBook)} $currentChapter:$currentVerse"
 
     fun refreshInstalled() {
         installedVersions.clear()
@@ -139,12 +265,27 @@ private fun ReaderScreen(context: Context) {
             verses.clear()
             verses.addAll(chapterLoad.chapterText)
             status = if (chapterLoad.chapterText.isEmpty()) {
-                "No text found at Book $currentBook Chapter $currentChapter."
+                "No text found."
             } else {
-                "${version.label}: Book $currentBook Chapter $currentChapter Verse $currentVerse"
+                ""
             }
             prefs.savePosition(currentBook, currentChapter)
             isBusy = false
+        }
+    }
+
+    fun navigateChapter(direction: Int) {
+        val version = selectedVersion ?: return
+        scope.launch {
+            val adjacent = withContext(Dispatchers.IO) {
+                reader.findAdjacent(version.file, currentBook, currentChapter, direction)
+            }
+            adjacent?.let {
+                currentBook = it.book
+                currentChapter = it.chapter
+                currentVerse = 1
+                loadChapter()
+            }
         }
     }
 
@@ -167,6 +308,25 @@ private fun ReaderScreen(context: Context) {
         }
     }
 
+    LaunchedEffect(currentPage, currentBook, currentChapter, currentVerse, verses) {
+        if (currentPage != ReaderPage.Scripture || verses.isEmpty()) return@LaunchedEffect
+        val targetIndex = verses.indexOfFirst { it.number == currentVerse }.let { index ->
+            if (index >= 0) index else 0
+        }
+        verseListState.scrollToItem(targetIndex)
+    }
+
+    LaunchedEffect(currentPage, verses) {
+        if (currentPage != ReaderPage.Scripture) return@LaunchedEffect
+        snapshotFlow { verseListState.firstVisibleItemIndex }
+            .collect { index ->
+                val visibleVerse = verses.getOrNull(index)?.number ?: return@collect
+                if (visibleVerse != currentVerse) {
+                    currentVerse = visibleVerse
+                }
+            }
+    }
+
     Surface(
         modifier = Modifier
             .fillMaxSize()
@@ -174,236 +334,455 @@ private fun ReaderScreen(context: Context) {
         color = Color.Black,
         contentColor = Color(0xFFE8E6E3)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("OnlyJesus Bible Reader", style = MaterialTheme.typography.titleLarge)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { installedExpanded = true }) {
-                    Text(selectedVersion?.label ?: "Select offline version")
-                }
-                DropdownMenu(expanded = installedExpanded, onDismissRequest = { installedExpanded = false }) {
-                    installedVersions.forEach { version ->
-                        DropdownMenuItem(
-                            text = { Text(version.label) },
-                            onClick = {
-                                installedExpanded = false
-                                selectedVersion = version
-                                scope.launch { prefs.saveVersion(version.file.absolutePath, version.label) }
-                                loadChapter()
-                            }
-                        )
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 12.dp)
+                    .padding(bottom = CONTENT_BOTTOM_PADDING.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        TextButton(
+                            onClick = { currentPage = ReaderPage.Settings },
+                            modifier = Modifier.align(Alignment.CenterEnd)
+                        ) {
+                            Text(
+                                text = "⚙",
+                                color = Color(0xFFE8E6E3).copy(alpha = 0.75f),
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                        }
                     }
                 }
 
-                Button(enabled = !isBusy, onClick = {
-                    scope.launch {
-                        isBusy = true
-                        status = "Loading version catalog..."
-                        val fetched = repository.fetchRemoteVersions()
-                        remoteVersions.clear()
-                        remoteVersions.addAll(fetched)
-                        status = if (fetched.isEmpty()) "No versions found from scrollmapper." else "Choose a version to download."
-                        isBusy = false
-                        remoteExpanded = fetched.isNotEmpty()
-                    }
-                }) { Text("Sync") }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (currentPage) {
+                        ReaderPage.Scripture -> {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(currentPage, selectedVersion, currentBook, currentChapter, isBusy) {
+                                        var dragDistance = 0f
+                                        detectHorizontalDragGestures(
+                                            onHorizontalDrag = { _, dragAmount ->
+                                                dragDistance += dragAmount
+                                            },
+                                            onDragEnd = {
+                                                if (!isBusy && selectedVersion != null) {
+                                                    if (dragDistance <= -120f) {
+                                                        navigateChapter(1)
+                                                    } else if (dragDistance >= 120f) {
+                                                        navigateChapter(-1)
+                                                    }
+                                                }
+                                                dragDistance = 0f
+                                            },
+                                            onDragCancel = {
+                                                dragDistance = 0f
+                                            }
+                                        )
+                                    }
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(enabled = !isBusy && selectedVersion != null, onClick = { navigateChapter(-1) }) { Text("Prev") }
 
-                DropdownMenu(expanded = remoteExpanded, onDismissRequest = { remoteExpanded = false }) {
-                    remoteVersions.forEach { remote ->
-                        DropdownMenuItem(
-                            text = { Text("${remote.displayName} (${remote.sizeMb} MB)") },
-                            onClick = {
-                                remoteExpanded = false
-                                scope.launch {
-                                    isBusy = true
-                                    status = "Downloading ${remote.displayName}..."
-                                    val installed = repository.installRemoteVersion(remote)
-                                    refreshInstalled()
-                                    selectedVersion = installed
-                                    prefs.saveVersion(installed.file.absolutePath, installed.label)
-                                    status = "Downloaded ${installed.label}."
-                                    loadChapter()
-                                    isBusy = false
+                                        Button(enabled = !isBusy && selectedVersion != null, onClick = { navigateChapter(1) }) { Text("Next") }
+
+                                        Text(
+                                            text = scriptureReference(),
+                                            modifier = Modifier.padding(top = 10.dp)
+                                        )
+                                    }
+
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        TextButton(enabled = availableBooks.isNotEmpty(), onClick = { bookExpanded = true }) {
+                                            Text("B: ${bookName(currentBook)}")
+                                        }
+                                        DropdownMenu(
+                                            expanded = bookExpanded,
+                                            onDismissRequest = { bookExpanded = false },
+                                            containerColor = MenuBackgroundColor
+                                        ) {
+                                            availableBooks.forEach { book ->
+                                                DropdownMenuItem(
+                                                    text = { Text(bookName(book), color = MenuTextColor) },
+                                                    onClick = {
+                                                        bookExpanded = false
+                                                        currentBook = book
+                                                        currentChapter = 1
+                                                        currentVerse = 1
+                                                        loadChapter()
+                                                    }
+                                                )
+                                            }
+                                        }
+
+                                        TextButton(enabled = availableChapters.isNotEmpty(), onClick = { chapterExpanded = true }) {
+                                            Text("Ch: $currentChapter")
+                                        }
+                                        DropdownMenu(
+                                            expanded = chapterExpanded,
+                                            onDismissRequest = { chapterExpanded = false },
+                                            containerColor = MenuBackgroundColor
+                                        ) {
+                                            availableChapters.forEach { chapter ->
+                                                DropdownMenuItem(
+                                                    text = { Text("Chapter $chapter", color = MenuTextColor) },
+                                                    onClick = {
+                                                        chapterExpanded = false
+                                                        currentChapter = chapter
+                                                        currentVerse = 1
+                                                        loadChapter()
+                                                    }
+                                                )
+                                            }
+                                        }
+
+                                        TextButton(enabled = availableVerses.isNotEmpty(), onClick = { verseExpanded = true }) {
+                                            Text("V: $currentVerse")
+                                        }
+                                        DropdownMenu(
+                                            expanded = verseExpanded,
+                                            onDismissRequest = { verseExpanded = false },
+                                            containerColor = MenuBackgroundColor
+                                        ) {
+                                            availableVerses.forEach { verse ->
+                                                DropdownMenuItem(
+                                                    text = { Text("Verse $verse", color = MenuTextColor) },
+                                                    onClick = {
+                                                        verseExpanded = false
+                                                        currentVerse = verse
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Text(scriptureReference(), color = Color(0xFF9DB7A6))
+
+                                    LazyColumn(
+                                        modifier = Modifier.fillMaxSize(),
+                                        state = verseListState,
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        items(verses) { verse ->
+                                            var verseMenuExpanded by remember(verse.number, verse.text) { mutableStateOf(false) }
+                                            val verseText = "${bookName(currentBook)} $currentChapter:${verse.number} ${verse.text}"
+                                            Box(modifier = Modifier.fillMaxWidth()) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .background(
+                                                            color = if (verse.number == currentVerse) Color(0xFF132018) else Color.Transparent,
+                                                            shape = RoundedCornerShape(8.dp)
+                                                        )
+                                                        .pointerInput(verse.number, verse.text) {
+                                                            detectTapGestures(
+                                                                onTap = { currentVerse = verse.number },
+                                                                onLongPress = { verseMenuExpanded = true }
+                                                            )
+                                                        }
+                                                        .padding(horizontal = 6.dp, vertical = 8.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "${verse.number}. ${verse.text}",
+                                                        color = if (verse.number == currentVerse) Color(0xFFCAE6D0) else Color(0xFFE8E6E3),
+                                                        fontSize = fontSizeSp.sp,
+                                                        fontFamily = selectedFontFamily()
+                                                    )
+                                                }
+                                                DropdownMenu(
+                                                    expanded = verseMenuExpanded,
+                                                    onDismissRequest = { verseMenuExpanded = false },
+                                                    containerColor = MenuBackgroundColor
+                                                ) {
+                                                    DropdownMenuItem(
+                                                        text = { Text("Copy verse", color = MenuTextColor) },
+                                                        onClick = {
+                                                            verseMenuExpanded = false
+                                                            copyText(context, verseText)
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Share verse", color = MenuTextColor) },
+                                                        onClick = {
+                                                            verseMenuExpanded = false
+                                                            shareText(context, "${selectedVersion?.label ?: "Bible"} - ${bookName(currentBook)} $currentChapter:${verse.number}", verseText)
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                        )
+                        }
+
+                        ReaderPage.Search -> {
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Text(
+                                    text = if (selectedVersion == null) "Pick a Bible version in settings to search." else "Search the current Bible version.",
+                                    color = Color(0xFF9DB7A6)
+                                )
+
+                                OutlinedTextField(
+                                    value = searchQuery,
+                                    onValueChange = { searchQuery = it },
+                                    label = { Text("Search verses") },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Button(
+                                    enabled = !isBusy && selectedVersion != null && searchQuery.isNotBlank(),
+                                    onClick = {
+                                        scope.launch {
+                                            val version = selectedVersion ?: return@launch
+                                            isBusy = true
+                                            val query = searchQuery.trim()
+                                            val matches = withContext(Dispatchers.IO) {
+                                                reader.searchVersesLike(version.file, query)
+                                            }
+                                            searchResults.clear()
+                                            searchResults.addAll(matches)
+                                            status = if (matches.isEmpty()) {
+                                                "No results for \"$query\"."
+                                            } else {
+                                                "Found ${matches.size} result(s) for \"$query\"."
+                                            }
+                                            isBusy = false
+                                        }
+                                    }
+                                ) { Text("Find") }
+
+                                Text(status, color = Color(0xFF9DB7A6))
+
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    items(searchResults) { result ->
+                                        var resultMenuExpanded by remember(result.book, result.chapter, result.verse, result.text) { mutableStateOf(false) }
+                                        val resultText = "${bookName(result.book)} ${result.chapter}:${result.verse} ${result.text}"
+                                        Box(modifier = Modifier.fillMaxWidth()) {
+                                            TextButton(onClick = {
+                                                currentBook = result.book
+                                                currentChapter = result.chapter
+                                                currentVerse = result.verse
+                                                searchResults.clear()
+                                                currentPage = ReaderPage.Scripture
+                                                loadChapter()
+                                            }, modifier = Modifier
+                                                .fillMaxWidth()
+                                                .pointerInput(result.book, result.chapter, result.verse, result.text) {
+                                                    detectTapGestures(onLongPress = { resultMenuExpanded = true })
+                                                }) {
+                                                val preview = result.text.take(SEARCH_RESULT_PREVIEW_LENGTH).let {
+                                                    if (result.text.length > SEARCH_RESULT_PREVIEW_LENGTH) "$it…" else it
+                                                }
+                                                Text("${bookName(result.book)} C${result.chapter} V${result.verse} $preview")
+                                            }
+                                            DropdownMenu(
+                                                expanded = resultMenuExpanded,
+                                                onDismissRequest = { resultMenuExpanded = false },
+                                                containerColor = MenuBackgroundColor
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Copy verse", color = MenuTextColor) },
+                                                    onClick = {
+                                                        resultMenuExpanded = false
+                                                        copyText(context, resultText)
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Share verse", color = MenuTextColor) },
+                                                    onClick = {
+                                                        resultMenuExpanded = false
+                                                        shareText(context, "${selectedVersion?.label ?: "Bible"} - ${bookName(result.book)} ${result.chapter}:${result.verse}", resultText)
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        ReaderPage.Settings -> {
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                Text("Bible version", style = MaterialTheme.typography.titleMedium)
+
+                                Box {
+                                    TextButton(onClick = { installedExpanded = true }) {
+                                        Text(selectedVersion?.label ?: "Select offline version")
+                                    }
+                                    DropdownMenu(
+                                        expanded = installedExpanded,
+                                        onDismissRequest = { installedExpanded = false },
+                                        containerColor = MenuBackgroundColor
+                                    ) {
+                                        installedVersions.forEach { version ->
+                                            DropdownMenuItem(
+                                                text = { Text(version.label, color = MenuTextColor) },
+                                                onClick = {
+                                                    installedExpanded = false
+                                                    selectedVersion = version
+                                                    scope.launch { prefs.saveVersion(version.file.absolutePath, version.label) }
+                                                    loadChapter()
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Box {
+                                    Button(enabled = !isBusy, onClick = {
+                                        scope.launch {
+                                            isBusy = true
+                                            status = "Loading version catalog..."
+                                            val fetched = repository.fetchRemoteVersions()
+                                            remoteVersions.clear()
+                                            remoteVersions.addAll(fetched)
+                                            status = if (fetched.isEmpty()) "No versions found from available sources." else "Choose a version to download."
+                                            isBusy = false
+                                            remoteExpanded = fetched.isNotEmpty()
+                                        }
+                                    }) { Text("Refresh sources") }
+
+                                    DropdownMenu(
+                                        expanded = remoteExpanded,
+                                        onDismissRequest = { remoteExpanded = false },
+                                        containerColor = MenuBackgroundColor
+                                    ) {
+                                        remoteVersions.forEach { remote ->
+                                            DropdownMenuItem(
+                                                text = { Text("${remote.displayName} (${remote.sizeMb} MB)", color = MenuTextColor) },
+                                                onClick = {
+                                                    remoteExpanded = false
+                                                    scope.launch {
+                                                        isBusy = true
+                                                        status = "Downloading ${remote.displayName}..."
+                                                        val installed = repository.installRemoteVersion(remote)
+                                                        refreshInstalled()
+                                                        selectedVersion = installed
+                                                        prefs.saveVersion(installed.file.absolutePath, installed.label)
+                                                        status = "Downloaded ${installed.label}."
+                                                        loadChapter()
+                                                        isBusy = false
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Text("Reader style", style = MaterialTheme.typography.titleMedium)
+
+                                val previewVerse = verses.firstOrNull { it.number == currentVerse }
+                                Text("Style preview", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF9DB7A6))
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFF132018), RoundedCornerShape(8.dp))
+                                        .padding(12.dp)
+                                ) {
+                                    Text(
+                                        text = previewVerse?.let {
+                                            "${bookName(currentBook)} $currentChapter:${it.number} ${it.text}"
+                                        } ?: "Select a verse in Scripture to preview its styling here.",
+                                        color = if (previewVerse != null) Color(0xFFCAE6D0) else Color(0xFF9DB7A6),
+                                        fontSize = fontSizeSp.sp,
+                                        fontFamily = selectedFontFamily()
+                                    )
+                                }
+
+                                TextButton(onClick = {
+                                    fontFamilyKey = when (fontFamilyKey) {
+                                        "serif" -> "sans"
+                                        "sans" -> "mono"
+                                        else -> "serif"
+                                    }
+                                    scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
+                                }) {
+                                    Text("Font: ${fontFamilyLabel(fontFamilyKey)}")
+                                }
+
+                                Text("Size: ${fontSizeSp.toInt()}sp", color = Color(0xFF9DB7A6))
+                                Slider(
+                                    value = fontSizeSp,
+                                    onValueChange = {
+                                        fontSizeSp = it
+                                        scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
+                                    },
+                                    valueRange = 14f..34f
+                                )
+
+                                Text(status, color = Color(0xFF9DB7A6))
+                            }
+                        }
                     }
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = !isBusy && selectedVersion != null, onClick = {
-                    scope.launch {
-                        val version = selectedVersion ?: return@launch
-                        val adjacent = withContext(Dispatchers.IO) {
-                            reader.findAdjacent(version.file, currentBook, currentChapter, -1)
-                        }
-                        adjacent?.let {
-                            currentBook = it.book
-                            currentChapter = it.chapter
-                            loadChapter()
-                        }
-                    }
-                }) { Text("Prev") }
-
-                Button(enabled = !isBusy && selectedVersion != null, onClick = {
-                    scope.launch {
-                        val version = selectedVersion ?: return@launch
-                        val adjacent = withContext(Dispatchers.IO) {
-                            reader.findAdjacent(version.file, currentBook, currentChapter, 1)
-                        }
-                        adjacent?.let {
-                            currentBook = it.book
-                            currentChapter = it.chapter
-                            loadChapter()
-                        }
-                    }
-                }) { Text("Next") }
-
-                Text("Book $currentBook Chapter $currentChapter Verse $currentVerse", modifier = Modifier.padding(top = 10.dp))
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                TextButton(enabled = availableBooks.isNotEmpty(), onClick = { bookExpanded = true }) {
-                    Text("Book: $currentBook")
-                }
-                DropdownMenu(expanded = bookExpanded, onDismissRequest = { bookExpanded = false }) {
-                    availableBooks.forEach { book ->
-                        DropdownMenuItem(
-                            text = { Text("Book $book") },
-                            onClick = {
-                                bookExpanded = false
-                                currentBook = book
-                                currentChapter = 1
-                                currentVerse = 1
-                                loadChapter()
-                            }
-                        )
-                    }
-                }
-
-                TextButton(enabled = availableChapters.isNotEmpty(), onClick = { chapterExpanded = true }) {
-                    Text("Chapter: $currentChapter")
-                }
-                DropdownMenu(expanded = chapterExpanded, onDismissRequest = { chapterExpanded = false }) {
-                    availableChapters.forEach { chapter ->
-                        DropdownMenuItem(
-                            text = { Text("Chapter $chapter") },
-                            onClick = {
-                                chapterExpanded = false
-                                currentChapter = chapter
-                                currentVerse = 1
-                                loadChapter()
-                            }
-                        )
-                    }
-                }
-
-                TextButton(enabled = availableVerses.isNotEmpty(), onClick = { verseExpanded = true }) {
-                    Text("Verse: $currentVerse")
-                }
-                DropdownMenu(expanded = verseExpanded, onDismissRequest = { verseExpanded = false }) {
-                    availableVerses.forEach { verse ->
-                        DropdownMenuItem(
-                            text = { Text("Verse $verse") },
-                            onClick = {
-                                verseExpanded = false
-                                currentVerse = verse
-                                status = "${selectedVersion?.label ?: "Bible"}: Book $currentBook Chapter $currentChapter Verse $currentVerse"
-                            }
-                        )
-                    }
-                }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    label = { Text("Search (LIKE)") },
-                    modifier = Modifier.weight(1f)
-                )
-                Button(
-                    enabled = !isBusy && selectedVersion != null && searchQuery.isNotBlank(),
-                    onClick = {
-                        scope.launch {
-                            val version = selectedVersion ?: return@launch
-                            isBusy = true
-                            val query = searchQuery.trim()
-                            val matches = withContext(Dispatchers.IO) {
-                                reader.searchVersesLike(version.file, query)
-                            }
-                            searchResults.clear()
-                            searchResults.addAll(matches)
-                            status = if (matches.isEmpty()) {
-                                "No results for \"$query\"."
-                            } else {
-                                "Found ${matches.size} result(s) for \"$query\"."
-                            }
-                            isBusy = false
-                        }
-                    }
-                ) { Text("Find") }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                TextButton(onClick = {
-                    fontFamilyKey = when (fontFamilyKey) {
-                        "serif" -> "sans"
-                        "sans" -> "mono"
-                        else -> "serif"
-                    }
-                    scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
-                }) {
-                    Text("Font: ${fontFamilyLabel(fontFamilyKey)}")
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Size: ${fontSizeSp.toInt()}sp")
-                    Slider(
-                        value = fontSizeSp,
-                        onValueChange = {
-                            fontSizeSp = it
-                            scope.launch { prefs.saveFont(fontFamilyKey, fontSizeSp) }
-                        },
-                        valueRange = 14f..34f
-                    )
-                }
-            }
-
-            Text(status, color = Color(0xFF9DB7A6))
-
-            LazyColumn(
+            Row(
                 modifier = Modifier
+                    .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .navigationBarsPadding(),
+                horizontalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                items(searchResults) { result ->
-                    TextButton(onClick = {
-                        currentBook = result.book
-                        currentChapter = result.chapter
-                        currentVerse = result.verse
-                        searchResults.clear()
-                        loadChapter()
-                    }) {
-                        val preview = result.text.take(SEARCH_RESULT_PREVIEW_LENGTH).let {
-                            if (result.text.length > SEARCH_RESULT_PREVIEW_LENGTH) "$it…" else it
-                        }
-                        Text("B${result.book} C${result.chapter} V${result.verse} $preview")
-                    }
-                }
-                items(verses) { verse ->
-                    Text(
-                        text = "${verse.number}. ${verse.text}",
-                        color = if (verse.number == currentVerse) Color(0xFF82A98E) else Color(0xFFE8E6E3),
-                        fontSize = fontSizeSp.sp,
-                        fontFamily = selectedFontFamily()
+                Button(
+                    onClick = { currentPage = ReaderPage.Search },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    shape = RoundedCornerShape(0.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (currentPage == ReaderPage.Search) Color(0xFF82A98E) else Color(0xFF3A3F3C)
+                    ),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (currentPage == ReaderPage.Search) Color(0xFF18251D) else Color(0xFF121212),
+                        contentColor = if (currentPage == ReaderPage.Search) Color(0xFFF2F6F4) else Color(0xFFB9C9BF)
                     )
+                ) {
+                    Text("Search")
+                }
+                Button(
+                    onClick = { currentPage = ReaderPage.Scripture },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    shape = RoundedCornerShape(0.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (currentPage == ReaderPage.Scripture) Color(0xFF82A98E) else Color(0xFF3A3F3C)
+                    ),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (currentPage == ReaderPage.Scripture) Color(0xFF18251D) else Color(0xFF121212),
+                        contentColor = if (currentPage == ReaderPage.Scripture) Color(0xFFF2F6F4) else Color(0xFFB9C9BF)
+                    )
+                ) {
+                    Text("Scripture")
                 }
             }
         }
@@ -437,10 +816,15 @@ private data class ChapterLoad(
 )
 data class ChapterLocation(val book: Int, val chapter: Int)
 data class InstalledVersion(val label: String, val file: File)
-data class RemoteVersion(val branch: String, val path: String, val sizeBytes: Long) {
-    val displayName: String = displayNameFromPath(path)
+data class BibleSource(val owner: String, val repo: String, val branch: String) {
+    val key: String = "${owner}_${repo}_$branch"
+    val label: String = "$owner/$repo"
+}
+
+data class RemoteVersion(val source: BibleSource, val branch: String, val path: String, val sizeBytes: Long) {
+    val displayName: String = "${source.label}: ${displayNameFromPath(path)}"
     val sizeMb: String = String.format("%.1f", sizeBytes / 1024.0 / 1024.0)
-    val downloadUrl: String = "https://raw.githubusercontent.com/scrollmapper/bible_databases/$branch/$path"
+    val downloadUrl: String = "https://raw.githubusercontent.com/${source.owner}/${source.repo}/$branch/$path"
 }
 
 private data class ReaderSettings(
@@ -495,31 +879,40 @@ private class ReaderPreferencesStore(private val context: Context) {
 private class BibleRepository(private val context: Context) {
     private val versionsDir: File = File(context.filesDir, "versions").apply { mkdirs() }
 
-    fun installedVersions(): List<InstalledVersion> = versionsDir.listFiles()
-        ?.filter { it.isFile && it.extension.lowercase() in listOf("db", "sqlite", "sqlite3") }
-        ?.sortedBy { it.name.lowercase() }
-        ?.map { InstalledVersion(displayNameFromPath(it.name), it) }
-        .orEmpty()
+    fun installedVersions(): List<InstalledVersion> = versionsDir
+        .walkTopDown()
+        .filter { it.isFile && it.extension.lowercase() == "json" }
+        .sortedBy { it.absolutePath.lowercase() }
+        .map { file ->
+            val sourceLabel = sourceLabelFromPath(file)
+            val displayName = displayNameFromPath(file.name)
+            InstalledVersion(
+                label = if (sourceLabel == null) displayName else "$sourceLabel: $displayName",
+                file = file
+            )
+        }
+        .toList()
 
     suspend fun fetchRemoteVersions(): List<RemoteVersion> = withContext(Dispatchers.IO) {
-        val branches = listOf("main", "master")
-        for (branch in branches) {
-            val versions = runCatching { fetchTree(branch) }.getOrDefault(emptyList())
-            if (versions.isNotEmpty()) return@withContext versions
+        val versions = mutableListOf<RemoteVersion>()
+        for (source in BibleSources) {
+            val fetched = runCatching { fetchTree(source, source.branch) }.getOrDefault(emptyList())
+            versions.addAll(fetched)
         }
-        emptyList()
+        versions.sortedBy { it.displayName.lowercase() }
     }
 
     suspend fun installRemoteVersion(remote: RemoteVersion): InstalledVersion = withContext(Dispatchers.IO) {
-        val target = File(versionsDir, remote.path.substringAfterLast('/'))
+        val target = File(File(versionsDir, remote.source.key), remote.path.substringAfterLast('/'))
+        target.parentFile?.mkdirs()
         if (!target.exists()) {
             downloadFile(remote.downloadUrl, target)
         }
-        InstalledVersion(displayNameFromPath(target.name), target)
+        InstalledVersion(label = remote.displayName, file = target)
     }
 
-    private fun fetchTree(branch: String): List<RemoteVersion> {
-        val endpoint = "https://api.github.com/repos/scrollmapper/bible_databases/git/trees/$branch?recursive=1"
+    private fun fetchTree(source: BibleSource, branch: String): List<RemoteVersion> {
+        val endpoint = "https://api.github.com/repos/${source.owner}/${source.repo}/git/trees/$branch?recursive=1"
         val payload = getText(endpoint)
         val root = JSONObject(payload)
         val tree = root.optJSONArray("tree") ?: return emptyList()
@@ -530,11 +923,21 @@ private class BibleRepository(private val context: Context) {
             if (node.optString("type") != "blob") continue
             val path = node.optString("path")
             val lower = path.lowercase()
-            val isBibleDb = lower.endsWith(".db") || lower.endsWith(".sqlite") || lower.endsWith(".sqlite3")
-            if (!isBibleDb) continue
-            versions += RemoteVersion(branch = branch, path = path, sizeBytes = node.optLong("size", 0))
+            val isJsonVersion = lower.startsWith("json/t_") && lower.endsWith(".json")
+            if (!isJsonVersion) continue
+            versions += RemoteVersion(
+                source = source,
+                branch = branch,
+                path = path,
+                sizeBytes = node.optLong("size", 0)
+            )
         }
-        return versions.sortedBy { it.displayName }
+        return versions.sortedBy { it.displayName.lowercase() }
+    }
+
+    private fun sourceLabelFromPath(file: File): String? {
+        val sourceKey = file.parentFile?.name ?: return null
+        return BibleSources.firstOrNull { it.key == sourceKey }?.label
     }
 
     private fun downloadFile(url: String, file: File) {
@@ -562,153 +965,102 @@ private class BibleRepository(private val context: Context) {
     }
 }
 
-private class SQLiteBibleReader {
-    fun availableBooks(dbFile: File): List<Int> {
-        val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
-        db.use {
-            val table = resolveVerseTable(it) ?: return emptyList()
-            val books = mutableListOf<Int>()
-            val query = "SELECT DISTINCT ${table.bookColumn} FROM ${table.tableName} ORDER BY ${table.bookColumn}"
-            it.rawQuery(query, emptyArray()).use { cursor ->
-                while (cursor.moveToNext()) {
-                    books += cursor.getInt(0)
-                }
-            }
-            return books
-        }
-    }
+private class JsonBibleReader {
+    private val cache = mutableMapOf<String, JsonBibleData>()
 
-    fun availableChapters(dbFile: File, book: Int): List<Int> {
-        val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
-        db.use {
-            val table = resolveVerseTable(it) ?: return emptyList()
-            val chapters = mutableListOf<Int>()
-            val query = "SELECT DISTINCT ${table.chapterColumn} FROM ${table.tableName} WHERE ${table.bookColumn} = ? ORDER BY ${table.chapterColumn}"
-            it.rawQuery(query, arrayOf(book.toString())).use { cursor ->
-                while (cursor.moveToNext()) {
-                    chapters += cursor.getInt(0)
-                }
-            }
-            return chapters
-        }
-    }
+    fun availableBooks(jsonFile: File): List<Int> = load(jsonFile).books
 
-    fun searchVersesLike(dbFile: File, textQuery: String, limit: Int = 100): List<VerseSearchHit> {
+    fun availableChapters(jsonFile: File, book: Int): List<Int> = load(jsonFile).chaptersByBook[book].orEmpty()
+
+    fun searchVersesLike(jsonFile: File, textQuery: String, limit: Int = 100): List<VerseSearchHit> {
         if (textQuery.isBlank()) return emptyList()
-        val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
-        db.use {
-            val table = resolveVerseTable(it) ?: return emptyList()
-            val hits = mutableListOf<VerseSearchHit>()
-            val escaped = escapeLikeQuery(textQuery.trim())
-            val query = """
-                SELECT ${table.bookColumn}, ${table.chapterColumn}, ${table.verseColumn}, ${table.textColumn}
-                FROM ${table.tableName}
-                WHERE ${table.textColumn} LIKE ? ESCAPE '\'
-                ORDER BY ${table.bookColumn}, ${table.chapterColumn}, ${table.verseColumn}
-                LIMIT ?
-            """.trimIndent()
-            it.rawQuery(query, arrayOf("%$escaped%", limit.toString())).use { cursor ->
-                while (cursor.moveToNext()) {
-                    hits += VerseSearchHit(
-                        book = cursor.getInt(0),
-                        chapter = cursor.getInt(1),
-                        verse = cursor.getInt(2),
-                        text = cursor.getString(3) ?: ""
-                    )
-                }
-            }
-            return hits
+        val query = textQuery.trim().lowercase()
+        return load(jsonFile).allVerses
+            .asSequence()
+            .filter { it.text.lowercase().contains(query) }
+            .sortedWith(compareBy<JsonVerseRecord> { it.book }.thenBy { it.chapter }.thenBy { it.verse })
+            .take(limit)
+            .map { VerseSearchHit(it.book, it.chapter, it.verse, it.text) }
+            .toList()
+    }
+
+    fun readChapter(jsonFile: File, book: Int, chapter: Int): List<Verse> {
+        return load(jsonFile).versesByChapter[ChapterLocation(book, chapter)].orEmpty()
+    }
+
+    fun findAdjacent(jsonFile: File, book: Int, chapter: Int, direction: Int): ChapterLocation? {
+        val refs = load(jsonFile).orderedChapters
+        val index = refs.indexOfFirst { it.book == book && it.chapter == chapter }
+        if (index == -1) return refs.firstOrNull()
+        return refs.getOrNull(index + direction)
+    }
+
+    private fun load(jsonFile: File): JsonBibleData {
+        val cacheKey = "${jsonFile.absolutePath}:${jsonFile.lastModified()}"
+        return cache.getOrPut(cacheKey) { parse(jsonFile) }
+    }
+
+    private fun parse(jsonFile: File): JsonBibleData {
+        val root = JSONObject(jsonFile.readText())
+        val resultset = root.optJSONObject("resultset") ?: return JsonBibleData.empty()
+        val rows = resultset.optJSONArray("row") ?: return JsonBibleData.empty()
+
+        val chapterMap = mutableMapOf<ChapterLocation, MutableList<Verse>>()
+        val chapterNumbersByBook = mutableMapOf<Int, MutableSet<Int>>()
+        val verses = mutableListOf<JsonVerseRecord>()
+
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            val field = row.optJSONArray("field") ?: continue
+            if (field.length() < 5) continue
+
+            val book = field.optInt(1, 0)
+            val chapter = field.optInt(2, 0)
+            val verse = field.optInt(3, 0)
+            val text = field.optString(4, "")
+            if (book <= 0 || chapter <= 0 || verse <= 0) continue
+
+            verses += JsonVerseRecord(book, chapter, verse, text)
+            chapterMap.getOrPut(ChapterLocation(book, chapter)) { mutableListOf() } += Verse(verse, text)
+            chapterNumbersByBook.getOrPut(book) { mutableSetOf() }.add(chapter)
+        }
+
+        val orderedChapters = chapterMap.keys.sortedWith(compareBy<ChapterLocation> { it.book }.thenBy { it.chapter })
+        val versesByChapter = chapterMap.mapValues { (_, chapterVerses) -> chapterVerses.sortedBy { it.number } }
+        val books = chapterNumbersByBook.keys.sorted()
+        val chaptersByBook = chapterNumbersByBook.mapValues { (_, chapters) -> chapters.sorted() }
+
+        return JsonBibleData(
+            books = books,
+            chaptersByBook = chaptersByBook,
+            orderedChapters = orderedChapters,
+            versesByChapter = versesByChapter,
+            allVerses = verses
+        )
+    }
+
+    private data class JsonBibleData(
+        val books: List<Int>,
+        val chaptersByBook: Map<Int, List<Int>>,
+        val orderedChapters: List<ChapterLocation>,
+        val versesByChapter: Map<ChapterLocation, List<Verse>>,
+        val allVerses: List<JsonVerseRecord>
+    ) {
+        companion object {
+            fun empty() = JsonBibleData(emptyList(), emptyMap(), emptyList(), emptyMap(), emptyList())
         }
     }
 
-    fun readChapter(dbFile: File, book: Int, chapter: Int): List<Verse> {
-        val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
-        db.use {
-            val table = resolveVerseTable(it) ?: return emptyList()
-            val rows = mutableListOf<Verse>()
-            val query = "SELECT ${table.verseColumn}, ${table.textColumn} FROM ${table.tableName} WHERE ${table.bookColumn} = ? AND ${table.chapterColumn} = ? ORDER BY ${table.verseColumn}"
-            it.rawQuery(query, arrayOf(book.toString(), chapter.toString())).use { cursor ->
-                while (cursor.moveToNext()) {
-                    rows += Verse(
-                        number = cursor.getInt(0),
-                        text = cursor.getString(1) ?: ""
-                    )
-                }
-            }
-            return rows
-        }
-    }
-
-    fun findAdjacent(dbFile: File, book: Int, chapter: Int, direction: Int): ChapterLocation? {
-        val db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
-        db.use {
-            val table = resolveVerseTable(it) ?: return null
-            val refs = mutableListOf<ChapterLocation>()
-            val query = "SELECT DISTINCT ${table.bookColumn}, ${table.chapterColumn} FROM ${table.tableName} ORDER BY ${table.bookColumn}, ${table.chapterColumn}"
-            it.rawQuery(query, emptyArray()).use { cursor ->
-                while (cursor.moveToNext()) {
-                    refs += ChapterLocation(cursor.getInt(0), cursor.getInt(1))
-                }
-            }
-            val index = refs.indexOfFirst { it.book == book && it.chapter == chapter }
-            if (index == -1) return refs.firstOrNull()
-            val targetIndex = index + direction
-            return refs.getOrNull(targetIndex)
-        }
-    }
-
-    private fun resolveVerseTable(db: SQLiteDatabase): VerseTable? {
-        val tables = mutableListOf<String>()
-        db.rawQuery("SELECT name FROM sqlite_master WHERE type='table'", emptyArray()).use { cursor ->
-            while (cursor.moveToNext()) {
-                val name = cursor.getString(0)
-                if (!name.startsWith("sqlite_")) tables += name
-            }
-        }
-
-        for (table in tables) {
-            val columns = mutableListOf<String>()
-            db.rawQuery("PRAGMA table_info($table)", emptyArray()).use { cursor ->
-                while (cursor.moveToNext()) {
-                    columns += cursor.getString(1)
-                }
-            }
-            val mapping = mapColumns(columns) ?: continue
-            return VerseTable(table, mapping.book, mapping.chapter, mapping.verse, mapping.text)
-        }
-        return null
-    }
-
-    private fun mapColumns(columns: List<String>): MappedColumns? {
-        fun pick(vararg names: String): String? = columns.firstOrNull { col -> names.any { it.equals(col, true) } }
-        val book = pick("book", "book_number", "book_id", "b") ?: return null
-        val chapter = pick("chapter", "chapter_number", "chapter_id", "c") ?: return null
-        val verse = pick("verse", "verse_number", "verse_id", "v") ?: return null
-        val text = pick("text", "scripture", "content", "t") ?: return null
-        return MappedColumns(book, chapter, verse, text)
-    }
-
-    private fun escapeLikeQuery(query: String): String {
-        return buildString(query.length * 2) {
-            query.forEach { ch ->
-                if (ch == '\\' || ch == '%' || ch == '_') append('\\')
-                append(ch)
-            }
-        }
-    }
-
-    private data class MappedColumns(val book: String, val chapter: String, val verse: String, val text: String)
-    private data class VerseTable(
-        val tableName: String,
-        val bookColumn: String,
-        val chapterColumn: String,
-        val verseColumn: String,
-        val textColumn: String
-    )
+    private data class JsonVerseRecord(val book: Int, val chapter: Int, val verse: Int, val text: String)
 }
 
 fun displayNameFromPath(path: String): String {
-    val name = path.substringAfterLast('/').substringBeforeLast('.')
+    val fileName = path.substringAfterLast('/')
+    if (fileName.lowercase().endsWith(".json") && (fileName.startsWith("t_") || fileName.startsWith("t-"))) {
+        return versionLabelFromPath(fileName)
+    }
+
+    val name = fileName.substringBeforeLast('.')
     return name
         .replace('_', ' ')
         .replace('-', ' ')
@@ -723,4 +1075,40 @@ private fun fontFamilyLabel(key: String): String = when (key) {
     "sans" -> "Sans"
     "mono" -> "Mono"
     else -> "Serif"
+}
+
+private fun bookName(bookNumber: Int): String = BibleBookNames.getOrNull(bookNumber - 1) ?: "Book $bookNumber"
+
+private fun versionLabelFromPath(path: String): String {
+    val name = path.substringAfterLast('/').substringBeforeLast('.').lowercase()
+    val versionKey = name.removePrefix("t_").removePrefix("t-")
+    return when (versionKey) {
+        "asv" -> "ASV"
+        "bbe" -> "BBE"
+        "kjv" -> "KJV"
+        "web" -> "WEB"
+        "ylt" -> "YLT"
+        else -> versionKey
+            .replace('_', ' ')
+            .replace('-', ' ')
+            .trim()
+            .split(" ")
+            .filter { it.isNotBlank() }
+            .joinToString(" ") { token -> token.replaceFirstChar { c -> c.uppercase() } }
+            .ifBlank { "Bible" }
+    }
+}
+
+private fun copyText(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText("Bible verse", text))
+}
+
+private fun shareText(context: Context, subject: String, text: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, subject)
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(intent, subject))
 }
