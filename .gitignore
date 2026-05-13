@@ -7,3 +7,4 @@ build
 # Ignore Kotlin plugin data
 .kotlin
 java_*.hprof
+app/src/main/assets/
