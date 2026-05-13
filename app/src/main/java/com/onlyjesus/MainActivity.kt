@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -454,6 +455,10 @@ private fun ReaderScreen(context: Context) {
             }
     }
 
+    BackHandler(enabled = currentPage == ReaderPage.Settings) {
+        currentPage = ReaderPage.Scripture
+    }
+
     val themeAccent = selectedThemeColor()
     val themeHighlight = themeAccent.copy(alpha = 0.14f)
     val themeBorder = themeAccent.copy(alpha = 0.72f)
@@ -482,7 +487,13 @@ private fun ReaderScreen(context: Context) {
                 ) {
                     Box(modifier = Modifier.fillMaxWidth()) {
                         TextButton(
-                            onClick = { currentPage = ReaderPage.Settings },
+                            onClick = {
+                                currentPage = if (currentPage == ReaderPage.Settings) {
+                                    ReaderPage.Scripture
+                                } else {
+                                    ReaderPage.Settings
+                                }
+                            },
                             modifier = Modifier.align(Alignment.CenterEnd)
                         ) {
                             Text(
