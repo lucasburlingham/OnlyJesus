@@ -7,7 +7,6 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.widget.NumberPicker
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -22,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -30,6 +30,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -62,7 +64,6 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -183,6 +184,11 @@ private enum class ReaderPage {
     Settings
 }
 
+private enum class ReferencePickerStage {
+    Book,
+    Chapter
+}
+
 @Composable
 private fun androidPrimaryThemeColor(context: Context): Color {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -242,6 +248,9 @@ private fun ReaderScreen(context: Context) {
     var isBusy by remember { mutableStateOf(false) }
     var installedExpanded by remember { mutableStateOf(false) }
     var remoteExpanded by remember { mutableStateOf(false) }
+    var referencePickerExpanded by remember { mutableStateOf(false) }
+    var referencePickerStage by remember { mutableStateOf(ReferencePickerStage.Book) }
+    var chapterPickerBook by remember { mutableStateOf(1) }
     var searchQuery by remember { mutableStateOf("") }
     val verses = remember { mutableStateListOf<Verse>() }
     val verseListState = rememberLazyListState()
@@ -306,6 +315,7 @@ private fun ReaderScreen(context: Context) {
             availableChapters.addAll(chapterLoad.chapters)
             availableVerses.clear()
             availableVerses.addAll(chapterLoad.verses)
+            chapterPickerBook = chapterLoad.book
             verses.clear()
             verses.addAll(chapterLoad.chapterText)
             status = if (chapterLoad.chapterText.isEmpty()) {
@@ -445,65 +455,171 @@ private fun ReaderScreen(context: Context) {
                                     modifier = Modifier.fillMaxSize(),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(top = 2.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text("Book", color = themeAccent.copy(alpha = 0.78f), style = MaterialTheme.typography.bodySmall)
-                                            ReferenceWheelPicker(
-                                                values = availableBooks.map { bookName(it) },
-                                                selectedIndex = availableBooks.indexOf(currentBook).takeIf { it >= 0 } ?: 0,
-                                                enabled = !isBusy && availableBooks.isNotEmpty(),
-                                                accent = themeAccent,
-                                                highlight = themeHighlight,
-                                                border = themeBorder,
-                                                onSelected = { index ->
-                                                    val selectedBook = availableBooks.getOrNull(index) ?: return@ReferenceWheelPicker
-                                                    if (selectedBook != currentBook) {
-                                                        currentBook = selectedBook
-                                                        currentChapter = 1
-                                                        currentVerse = 1
-                                                        loadChapter()
+                                    Box {
+                                        TextButton(
+                                            enabled = !isBusy && selectedVersion != null,
+                                            onClick = {
+                                                referencePickerStage = ReferencePickerStage.Book
+                                                referencePickerExpanded = !referencePickerExpanded
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .border(1.dp, themeBorder, RoundedCornerShape(12.dp))
+                                                .background(themeHighlight, RoundedCornerShape(12.dp))
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                                horizontalAlignment = Alignment.Start
+                                            ) {
+                                                Text(
+                                                    text = scriptureReference(),
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    color = themeAccent
+                                                )
+                                                Text(
+                                                    text = if (referencePickerExpanded) "Pick a book, then a chapter" else "Tap to change book or chapter",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = themeAccent.copy(alpha = 0.78f)
+                                                )
+                                            }
+                                        }
+
+                                        if (referencePickerExpanded) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(top = 56.dp)
+                                                    .border(1.dp, themeBorder.copy(alpha = 0.75f), RoundedCornerShape(14.dp))
+                                                    .background(themeHighlight.copy(alpha = 0.22f), RoundedCornerShape(14.dp))
+                                                    .padding(10.dp)
+                                            ) {
+                                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = if (referencePickerStage == ReferencePickerStage.Book) "Books" else "Chapters",
+                                                            style = MaterialTheme.typography.titleSmall,
+                                                            color = themeAccent
+                                                        )
+                                                        TextButton(onClick = {
+                                                            if (referencePickerStage == ReferencePickerStage.Chapter) {
+                                                                referencePickerStage = ReferencePickerStage.Book
+                                                            } else {
+                                                                referencePickerExpanded = false
+                                                            }
+                                                        }) {
+                                                            Text(
+                                                                text = if (referencePickerStage == ReferencePickerStage.Chapter) "Back" else "Close",
+                                                                color = themeAccent
+                                                            )
+                                                        }
+                                                    }
+
+                                                    if (referencePickerStage == ReferencePickerStage.Book) {
+                                                        Text(
+                                                            text = "Choose a book",
+                                                            color = themeAccent.copy(alpha = 0.78f),
+                                                            style = MaterialTheme.typography.bodySmall
+                                                        )
+                                                        LazyVerticalGrid(
+                                                            columns = GridCells.Fixed(3),
+                                                            modifier = Modifier.height(280.dp),
+                                                            contentPadding = PaddingValues(4.dp),
+                                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                        ) {
+                                                            items(availableBooks.size) { index ->
+                                                                val book = availableBooks[index]
+                                                                val selected = book == currentBook
+                                                                TextButton(
+                                                                    onClick = {
+                                                                        currentBook = book
+                                                                        currentChapter = 1
+                                                                        currentVerse = 1
+                                                                        referencePickerStage = ReferencePickerStage.Chapter
+                                                                        loadChapter()
+                                                                    },
+                                                                    colors = ButtonDefaults.textButtonColors(
+                                                                        contentColor = if (selected) themeAccent else themeAccent.copy(alpha = 0.78f)
+                                                                    ),
+                                                                    modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .background(
+                                                                            if (selected) themeAccentBackground(themeAccent) else Color.Transparent,
+                                                                            RoundedCornerShape(10.dp)
+                                                                        )
+                                                                        .border(
+                                                                            1.dp,
+                                                                            if (selected) themeBorder else Color.Transparent,
+                                                                            RoundedCornerShape(10.dp)
+                                                                        )
+                                                                ) {
+                                                                    Text(bookName(book), style = MaterialTheme.typography.bodyMedium)
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        Text(
+                                                            text = bookName(currentBook),
+                                                            color = themeAccent,
+                                                            style = MaterialTheme.typography.bodyMedium
+                                                        )
+                                                        if (chapterPickerBook != currentBook) {
+                                                            Text(
+                                                                text = "Loading chapters...",
+                                                                color = themeAccent.copy(alpha = 0.78f),
+                                                                style = MaterialTheme.typography.bodySmall
+                                                            )
+                                                        } else {
+                                                            Text(
+                                                                text = "Choose a chapter",
+                                                                color = themeAccent.copy(alpha = 0.78f),
+                                                                style = MaterialTheme.typography.bodySmall
+                                                            )
+                                                            LazyVerticalGrid(
+                                                                columns = GridCells.Fixed(6),
+                                                                modifier = Modifier.height(220.dp),
+                                                                contentPadding = PaddingValues(4.dp),
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                            ) {
+                                                                items(availableChapters.size) { index ->
+                                                                    val chapter = availableChapters[index]
+                                                                    val selected = chapter == currentChapter
+                                                                    TextButton(
+                                                                        onClick = {
+                                                                            currentChapter = chapter
+                                                                            currentVerse = 1
+                                                                            referencePickerExpanded = false
+                                                                            loadChapter()
+                                                                        },
+                                                                        colors = ButtonDefaults.textButtonColors(
+                                                                            contentColor = if (selected) themeAccent else themeAccent.copy(alpha = 0.78f)
+                                                                        ),
+                                                                        modifier = Modifier
+                                                                            .fillMaxWidth()
+                                                                            .background(
+                                                                                if (selected) themeAccentBackground(themeAccent) else Color.Transparent,
+                                                                                RoundedCornerShape(8.dp)
+                                                                            )
+                                                                            .border(
+                                                                                1.dp,
+                                                                                if (selected) themeBorder else Color.Transparent,
+                                                                                RoundedCornerShape(8.dp)
+                                                                            )
+                                                                    ) {
+                                                                        Text(chapter.toString(), style = MaterialTheme.typography.bodyMedium)
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
-                                            )
-                                        }
-                                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text("Chapter", color = themeAccent.copy(alpha = 0.78f), style = MaterialTheme.typography.bodySmall)
-                                            ReferenceWheelPicker(
-                                                values = availableChapters.map { it.toString() },
-                                                selectedIndex = availableChapters.indexOf(currentChapter).takeIf { it >= 0 } ?: 0,
-                                                enabled = !isBusy && availableChapters.isNotEmpty(),
-                                                accent = themeAccent,
-                                                highlight = themeHighlight,
-                                                border = themeBorder,
-                                                onSelected = { index ->
-                                                    val selectedChapter = availableChapters.getOrNull(index) ?: return@ReferenceWheelPicker
-                                                    if (selectedChapter != currentChapter) {
-                                                        currentChapter = selectedChapter
-                                                        currentVerse = 1
-                                                        loadChapter()
-                                                    }
-                                                }
-                                            )
-                                        }
-                                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text("Verse", color = themeAccent.copy(alpha = 0.78f), style = MaterialTheme.typography.bodySmall)
-                                            ReferenceWheelPicker(
-                                                values = availableVerses.map { it.toString() },
-                                                selectedIndex = availableVerses.indexOf(currentVerse).takeIf { it >= 0 } ?: 0,
-                                                enabled = !isBusy && availableVerses.isNotEmpty(),
-                                                accent = themeAccent,
-                                                highlight = themeHighlight,
-                                                border = themeBorder,
-                                                onSelected = { index ->
-                                                    val selectedVerse = availableVerses.getOrNull(index) ?: return@ReferenceWheelPicker
-                                                    currentVerse = selectedVerse
-                                                }
-                                            )
+                                            }
                                         }
                                     }
 
@@ -933,55 +1049,7 @@ private fun ReaderScreen(context: Context) {
     }
 }
 
-@Composable
-private fun ReferenceWheelPicker(
-    values: List<String>,
-    selectedIndex: Int,
-    enabled: Boolean,
-    accent: Color,
-    highlight: Color,
-    border: Color,
-    onSelected: (Int) -> Unit,
-) {
-    val callbackSuppressed = remember { mutableStateOf(false) }
-    val wheelHeight = 176.dp
-
-    AndroidView(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(wheelHeight)
-            .border(1.dp, border, RoundedCornerShape(14.dp))
-            .background(highlight, RoundedCornerShape(14.dp)),
-        factory = { context ->
-            NumberPicker(context).apply {
-                descendantFocusability = NumberPicker.FOCUS_BLOCK_DESCENDANTS
-                wrapSelectorWheel = false
-                setOnValueChangedListener { _, _, newVal ->
-                    if (!callbackSuppressed.value) {
-                        onSelected(newVal)
-                    }
-                }
-            }
-        },
-        update = { picker ->
-            val displayValues = if (values.isNotEmpty()) values.toTypedArray() else arrayOf("-")
-            val clampedIndex = selectedIndex.coerceIn(0, displayValues.lastIndex)
-
-            callbackSuppressed.value = true
-            picker.minValue = 0
-            picker.maxValue = displayValues.lastIndex
-            if (picker.displayedValues == null || !picker.displayedValues!!.contentEquals(displayValues)) {
-                picker.displayedValues = null
-                picker.displayedValues = displayValues
-            }
-            if (picker.value != clampedIndex) {
-                picker.value = clampedIndex
-            }
-            picker.isEnabled = enabled && values.isNotEmpty()
-            callbackSuppressed.value = false
-        }
-    )
-}
+private fun themeAccentBackground(accent: Color): Color = accent.copy(alpha = 0.12f)
 
 @Composable
 private fun AmoledTheme(content: @Composable () -> Unit) {
