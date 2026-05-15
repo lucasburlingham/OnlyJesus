@@ -8,15 +8,27 @@ import androidx.compose.material.icons.outlined.FormatBold
 import androidx.compose.material.icons.outlined.FormatItalic
 import androidx.compose.material.icons.outlined.FormatListNumbered
 import androidx.compose.material.icons.outlined.FormatUnderlined
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Stop
 import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
 import android.os.Bundle
+import android.os.Looper
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -118,6 +130,7 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import android.graphics.Typeface
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
@@ -297,6 +310,8 @@ private fun ReaderScreen(context: Context) {
     val repository = remember { BibleRepository(context) }
     val reader = remember { JsonBibleReader() }
     val libraryStore = remember { VerseLibraryStore(context) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    val appContext = context.applicationContext
 
     var currentPage by remember { mutableStateOf(ReaderPage.Scripture) }
     var selectedVersion by remember { mutableStateOf<InstalledVersion?>(null) }
@@ -318,12 +333,27 @@ private fun ReaderScreen(context: Context) {
     var searchQuery by remember { mutableStateOf("") }
     var licenseExpanded by remember { mutableStateOf(false) }
     var licenseTapStreak by remember { mutableStateOf(0) }
+    var ttsInitialized by remember { mutableStateOf(false) }
+    var ttsReady by remember { mutableStateOf(false) }
+    var ttsStatus by remember { mutableStateOf("Text-to-speech is loading.") }
+    var isSpeaking by remember { mutableStateOf(false) }
+    var ttsSpeakingVerseNumber by remember { mutableStateOf<Int?>(null) }
+    var ttsQueuedVerseNumbers by remember { mutableStateOf(emptyList<Int>()) }
+    var ttsLanguageCode by remember { mutableStateOf("") }
+    var ttsVoiceName by remember { mutableStateOf("") }
+    var ttsSpeechRate by remember { mutableFloatStateOf(1f) }
+    var ttsPitch by remember { mutableFloatStateOf(1f) }
+    var ttsVoiceExpanded by remember { mutableStateOf(false) }
+    var ttsLanguageExpanded by remember { mutableStateOf(false) }
     var showNonPublicDomainVersions by remember { mutableStateOf(false) }
     var pendingScrollVerse by remember(currentBook, currentChapter, selectedVersion?.file?.absolutePath) { mutableStateOf<Int?>(null) }
     val verses = remember { mutableStateListOf<Verse>() }
     val verseListState = rememberLazyListState()
     val highlightedVerseNumber by remember(verses, currentPage) {
         derivedStateOf {
+            if (ttsSpeakingVerseNumber != null) {
+                return@derivedStateOf ttsSpeakingVerseNumber!!
+            }
             if (currentPage != ReaderPage.Scripture || verses.isEmpty()) {
                 currentVerse
             } else {
@@ -352,6 +382,357 @@ private fun ReaderScreen(context: Context) {
     var librarySection by remember { mutableStateOf(LibrarySection.Bookmarks) }
     val searchScrollState = rememberScrollState()
     val libraryScrollState = rememberScrollState()
+    val availableTtsVoices = remember { mutableStateListOf<Voice>() }
+    val availableTtsLanguages = remember { mutableStateListOf<String>() }
+    var ttsPlaybackVerses by remember { mutableStateOf<List<Verse>>(emptyList()) }
+    var ttsPlaybackLabel by remember { mutableStateOf("") }
+    var ttsPlaybackIndex by remember { mutableStateOf(0) }
+    var mediaSession by remember { mutableStateOf<MediaSession?>(null) }
+    var speechAudioFocusRequest by remember { mutableStateOf<AudioFocusRequest?>(null) }
+    val textToSpeech = remember(appContext) {
+        TextToSpeech(appContext) { status ->
+            mainHandler.post {
+                ttsInitialized = status == TextToSpeech.SUCCESS
+                if (status != TextToSpeech.SUCCESS) {
+                    ttsReady = false
+                    ttsStatus = "Text-to-speech could not start on this device."
+                }
+            }
+        }
+    }
+
+    fun updateMediaPlaybackState() {
+        val session = mediaSession ?: return
+        val actions = PlaybackState.ACTION_PLAY or
+            PlaybackState.ACTION_PAUSE or
+            PlaybackState.ACTION_STOP or
+            PlaybackState.ACTION_SKIP_TO_NEXT or
+            PlaybackState.ACTION_SKIP_TO_PREVIOUS
+        val state = when {
+            isSpeaking -> PlaybackState.STATE_PLAYING
+            ttsPlaybackVerses.isNotEmpty() -> PlaybackState.STATE_PAUSED
+            else -> PlaybackState.STATE_STOPPED
+        }
+        session.setPlaybackState(
+            PlaybackState.Builder()
+                .setActions(actions)
+                .setState(state, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
+                .build()
+        )
+        session.isActive = isSpeaking || ttsPlaybackVerses.isNotEmpty()
+    }
+
+    fun requestSpeechAudioFocus(): Boolean {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return true
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (speechAudioFocusRequest == null) {
+                speechAudioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setOnAudioFocusChangeListener { focusChange ->
+                        if (focusChange <= AudioManager.AUDIOFOCUS_LOSS) {
+                            mainHandler.post {
+                                textToSpeech.stop()
+                                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                                if (audioManager != null) {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        val request = speechAudioFocusRequest
+                                        if (request != null) {
+                                            audioManager.abandonAudioFocusRequest(request)
+                                        }
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        audioManager.abandonAudioFocus(null)
+                                    }
+                                }
+                                isSpeaking = false
+                                ttsSpeakingVerseNumber = null
+                                ttsQueuedVerseNumbers = emptyList()
+                                ttsPlaybackVerses = emptyList()
+                                ttsPlaybackLabel = ""
+                                ttsPlaybackIndex = 0
+                                ttsStatus = "Playback paused."
+                                updateMediaPlaybackState()
+                            }
+                        }
+                    }
+                    .build()
+            }
+            audioManager.requestAudioFocus(speechAudioFocusRequest!!) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(
+                null,
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+            ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }
+    }
+
+    fun abandonSpeechAudioFocus() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = speechAudioFocusRequest ?: return
+            audioManager.abandonAudioFocusRequest(request)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(null)
+        }
+    }
+
+    fun stopReading() {
+        textToSpeech.stop()
+        isSpeaking = false
+        ttsSpeakingVerseNumber = null
+        ttsQueuedVerseNumbers = emptyList()
+        ttsPlaybackVerses = emptyList()
+        ttsPlaybackLabel = ""
+        ttsPlaybackIndex = 0
+        ttsStatus = "Playback stopped."
+        abandonSpeechAudioFocus()
+        updateMediaPlaybackState()
+    }
+
+    fun speakVerses(referenceLabel: String, versesToRead: List<Verse>) {
+        val sanitizedVerses = versesToRead.mapNotNull { verse ->
+            val text = verse.text.replace(Regex("\\s+"), " ").trim()
+            if (text.isBlank()) null else verse.copy(text = text)
+        }
+        if (sanitizedVerses.isEmpty()) {
+            ttsStatus = "Nothing to read."
+            return
+        }
+        if (!ttsReady) {
+            ttsStatus = if (ttsInitialized) {
+                "Text-to-speech is not available on this device."
+            } else {
+                "Text-to-speech is still loading."
+            }
+            return
+        }
+        ttsQueuedVerseNumbers = sanitizedVerses.map { it.number }
+        if (ttsLanguageCode.isNotBlank()) {
+            textToSpeech.language = Locale(ttsLanguageCode)
+        }
+        textToSpeech.setSpeechRate(ttsSpeechRate.coerceIn(0.5f, 2.0f))
+        textToSpeech.setPitch(ttsPitch.coerceIn(0.5f, 2.0f))
+        val selectedVoice = availableTtsVoices.firstOrNull {
+            it.name == ttsVoiceName && (ttsLanguageCode.isBlank() || it.locale.language == ttsLanguageCode)
+        }
+        if (selectedVoice != null) {
+            textToSpeech.voice = selectedVoice
+        }
+        ttsPlaybackVerses = sanitizedVerses
+        ttsPlaybackLabel = referenceLabel
+        if (ttsPlaybackIndex !in sanitizedVerses.indices) {
+            ttsPlaybackIndex = 0
+        }
+        val firstResult = textToSpeech.speak(sanitizedVerses.first().text, TextToSpeech.QUEUE_FLUSH, null, "${referenceLabel}:${sanitizedVerses.first().number}")
+        if (firstResult != TextToSpeech.SUCCESS) {
+            ttsQueuedVerseNumbers = emptyList()
+            ttsPlaybackVerses = emptyList()
+            ttsPlaybackLabel = ""
+            ttsPlaybackIndex = 0
+            ttsStatus = "Text-to-speech could not start."
+            abandonSpeechAudioFocus()
+            updateMediaPlaybackState()
+            return
+        }
+        for (verse in sanitizedVerses.drop(1)) {
+            val queuedResult = textToSpeech.speak(verse.text, TextToSpeech.QUEUE_ADD, null, "${referenceLabel}:${verse.number}")
+            if (queuedResult != TextToSpeech.SUCCESS) {
+                ttsQueuedVerseNumbers = emptyList()
+                ttsPlaybackVerses = emptyList()
+                ttsPlaybackLabel = ""
+                ttsPlaybackIndex = 0
+                ttsStatus = "Text-to-speech could not queue all verses."
+                abandonSpeechAudioFocus()
+                updateMediaPlaybackState()
+                return
+            }
+        }
+        isSpeaking = true
+        ttsSpeakingVerseNumber = sanitizedVerses.first().number
+        ttsStatus = "Reading $referenceLabel."
+        updateMediaPlaybackState()
+    }
+
+    fun pauseReading() {
+        textToSpeech.stop()
+        abandonSpeechAudioFocus()
+        isSpeaking = false
+        ttsSpeakingVerseNumber = null
+        ttsQueuedVerseNumbers = emptyList()
+        ttsStatus = "Playback paused."
+        updateMediaPlaybackState()
+    }
+
+    fun resumeReading() {
+        if (ttsPlaybackVerses.isEmpty()) return
+        if (!requestSpeechAudioFocus()) {
+            ttsStatus = "Unable to pause other audio for playback."
+            return
+        }
+        speakVerses(ttsPlaybackLabel, ttsPlaybackVerses.drop(ttsPlaybackIndex))
+    }
+
+    mediaSession = remember(appContext) {
+        MediaSession(appContext, "OnlyJesusTts").apply {
+            setCallback(object : MediaSession.Callback() {
+                override fun onPlay() {
+                    mainHandler.post { resumeReading() }
+                }
+
+                override fun onPause() {
+                    mainHandler.post { pauseReading() }
+                }
+
+                override fun onStop() {
+                    mainHandler.post { stopReading() }
+                }
+
+                override fun onSkipToNext() {
+                    mainHandler.post {
+                        if (ttsPlaybackVerses.isEmpty()) return@post
+                        ttsPlaybackIndex = (ttsPlaybackIndex + 1).coerceAtMost(ttsPlaybackVerses.lastIndex)
+                        pauseReading()
+                        resumeReading()
+                    }
+                }
+
+                override fun onSkipToPrevious() {
+                    mainHandler.post {
+                        if (ttsPlaybackVerses.isEmpty()) return@post
+                        ttsPlaybackIndex = (ttsPlaybackIndex - 1).coerceAtLeast(0)
+                        pauseReading()
+                        resumeReading()
+                    }
+                }
+            })
+        }
+    }
+
+    DisposableEffect(textToSpeech) {
+        onDispose {
+            textToSpeech.stop()
+            textToSpeech.shutdown()
+            mediaSession?.release()
+        }
+    }
+
+    LaunchedEffect(ttsInitialized) {
+        if (!ttsInitialized) return@LaunchedEffect
+        val primaryLanguageResult = textToSpeech.setLanguage(Locale.US)
+        val ready = if (
+            primaryLanguageResult == TextToSpeech.LANG_MISSING_DATA ||
+            primaryLanguageResult == TextToSpeech.LANG_NOT_SUPPORTED
+        ) {
+            val fallbackLanguageResult = textToSpeech.setLanguage(Locale.getDefault())
+            fallbackLanguageResult != TextToSpeech.LANG_MISSING_DATA &&
+                fallbackLanguageResult != TextToSpeech.LANG_NOT_SUPPORTED
+        } else {
+            true
+        }
+        ttsReady = ready
+        ttsStatus = if (ready) {
+            "Text-to-speech ready."
+        } else {
+            "Install a speech engine or language pack to enable TTS."
+        }
+    }
+
+    LaunchedEffect(ttsReady) {
+        if (!ttsReady) return@LaunchedEffect
+        availableTtsVoices.clear()
+        availableTtsVoices.addAll(
+            textToSpeech.voices
+                .orEmpty()
+                .sortedWith(compareBy<Voice> { it.locale.language }.thenBy { it.locale.country }.thenBy { it.name })
+        )
+        availableTtsLanguages.clear()
+        availableTtsLanguages.addAll(
+            availableTtsVoices
+                .map { it.locale.language }
+                .distinct()
+                .sortedWith(compareBy { Locale(it).getDisplayLanguage(Locale.getDefault()) })
+        )
+        if (ttsLanguageCode.isNotBlank() && availableTtsLanguages.none { it == ttsLanguageCode }) {
+            ttsLanguageCode = ""
+        }
+        if (ttsLanguageCode.isNotBlank() && availableTtsVoices.none { it.name == ttsVoiceName && it.locale.language == ttsLanguageCode }) {
+            ttsVoiceName = ""
+        }
+        if (ttsVoiceName.isNotBlank() && availableTtsVoices.none { it.name == ttsVoiceName }) {
+            ttsVoiceName = ""
+        }
+    }
+
+    LaunchedEffect(textToSpeech) {
+        textToSpeech.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                val verseNumber = utteranceId?.substringAfterLast(':')?.toIntOrNull()
+                mainHandler.post {
+                    if (verseNumber != null) {
+                        ttsSpeakingVerseNumber = verseNumber
+                        ttsPlaybackIndex = ttsPlaybackVerses.indexOfFirst { it.number == verseNumber }.takeIf { it >= 0 } ?: ttsPlaybackIndex
+                    }
+                    isSpeaking = true
+                    updateMediaPlaybackState()
+                }
+            }
+
+            override fun onDone(utteranceId: String?) {
+                val verseNumber = utteranceId?.substringAfterLast(':')?.toIntOrNull()
+                mainHandler.post {
+                    val lastQueuedVerse = ttsQueuedVerseNumbers.lastOrNull()
+                    if (verseNumber != null && verseNumber == lastQueuedVerse) {
+                        isSpeaking = false
+                        ttsSpeakingVerseNumber = null
+                        ttsQueuedVerseNumbers = emptyList()
+                        ttsPlaybackVerses = emptyList()
+                        ttsPlaybackLabel = ""
+                        ttsPlaybackIndex = 0
+                        ttsStatus = "Playback finished."
+                        updateMediaPlaybackState()
+                    }
+                }
+            }
+
+            override fun onError(utteranceId: String?) {
+                mainHandler.post {
+                    isSpeaking = false
+                    ttsSpeakingVerseNumber = null
+                    ttsQueuedVerseNumbers = emptyList()
+                    ttsPlaybackVerses = emptyList()
+                    ttsPlaybackLabel = ""
+                    ttsPlaybackIndex = 0
+                    ttsStatus = "Text-to-speech stopped with an error."
+                    updateMediaPlaybackState()
+                }
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                mainHandler.post {
+                    isSpeaking = false
+                    ttsSpeakingVerseNumber = null
+                    ttsQueuedVerseNumbers = emptyList()
+                    ttsPlaybackVerses = emptyList()
+                    ttsPlaybackLabel = ""
+                    ttsPlaybackIndex = 0
+                    ttsStatus = "Text-to-speech stopped with an error."
+                    updateMediaPlaybackState()
+                }
+            }
+        })
+    }
+
+    fun speakVerse(referenceLabel: String, verseText: String, verseNumber: Int) {
+        speakVerses(referenceLabel, listOf(Verse(verseNumber, verseText)))
+    }
 
     fun persistLibraryState(section: LibrarySection = librarySection, reference: VerseReference? = selectedLibraryVerse) {
         scope.launch {
@@ -679,6 +1060,10 @@ private fun ReaderScreen(context: Context) {
         themeColorIndex = saved.themeColorIndex.coerceIn(0, ThemeAccentOptions.lastIndex)
         themeModePreference = saved.themeMode
         useAndroidPrimaryTheme = saved.useAndroidPrimaryTheme
+        ttsLanguageCode = saved.ttsLanguageCode
+        ttsVoiceName = saved.ttsVoiceName
+        ttsSpeechRate = saved.ttsSpeechRate
+        ttsPitch = saved.ttsPitch
         librarySection = saved.librarySection
         selectedLibraryVerse = if (saved.libraryBook > 0 && saved.libraryChapter > 0 && saved.libraryVerse > 0) {
             VerseReference(saved.libraryBook, saved.libraryChapter, saved.libraryVerse)
@@ -1014,6 +1399,40 @@ private fun ReaderScreen(context: Context) {
                                             }
                                         }
 
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Button(
+                                                onClick = {
+                                                    speakVerses("${bookName(currentBook)} $currentChapter", verses)
+                                                },
+                                                enabled = verses.isNotEmpty() && selectedVersion != null && ttsReady,
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = themeHighlight,
+                                                    contentColor = themeAccent
+                                                ),
+                                                border = BorderStroke(1.dp, themeBorder)
+                                            ) {
+                                                Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                                                Text("Read chapter")
+                                            }
+                                            TextButton(
+                                                onClick = { stopReading() },
+                                                enabled = isSpeaking
+                                            ) {
+                                                Icon(Icons.Outlined.Stop, contentDescription = null, tint = themeAccent)
+                                                Text("Stop", color = themeAccent)
+                                            }
+                                        }
+
+                                        Text(
+                                            text = ttsStatus,
+                                            color = themeAccent.copy(alpha = 0.72f),
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+
                                         if (referencePickerExpanded) {
                                             Box(
                                                 modifier = Modifier
@@ -1199,6 +1618,13 @@ private fun ReaderScreen(context: Context) {
                                                         onClick = {
                                                             verseMenuExpanded = false
                                                             shareText(context, "${selectedVersion?.label ?: "Bible"} - ${bookName(currentBook)} $currentChapter:${verse.number}", verseText)
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Read aloud", color = MenuTextColor) },
+                                                        onClick = {
+                                                            verseMenuExpanded = false
+                                                            speakVerse("${bookName(currentBook)} $currentChapter:${verse.number}", verse.text, verse.number)
                                                         }
                                                     )
                                                     DropdownMenuItem(
@@ -1880,6 +2306,176 @@ private fun ReaderScreen(context: Context) {
                                     )
                                 )
 
+                                Text("Voice options", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+
+                                Text("Language", color = themeAccent.copy(alpha = 0.78f))
+                                Box {
+                                    TextButton(
+                                        onClick = { ttsLanguageExpanded = true },
+                                        modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
+                                    ) {
+                                        val selectedLanguageLabel = if (ttsLanguageCode.isBlank()) {
+                                            "System default"
+                                        } else {
+                                            Locale(ttsLanguageCode).getDisplayLanguage(Locale.getDefault())
+                                        }
+                                        Text("$selectedLanguageLabel ▼", color = themeAccent)
+                                    }
+                                    DropdownMenu(
+                                        expanded = ttsLanguageExpanded,
+                                        onDismissRequest = { ttsLanguageExpanded = false },
+                                        containerColor = MenuBackgroundColor
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("System default", color = MenuTextColor) },
+                                            trailingIcon = { Text(if (ttsLanguageCode.isBlank()) "✓" else "", color = themeAccent) },
+                                            onClick = {
+                                                ttsLanguageExpanded = false
+                                                ttsLanguageCode = ""
+                                                ttsVoiceName = ""
+                                                scope.launch { prefs.saveTtsSettings(ttsLanguageCode, ttsVoiceName, ttsSpeechRate, ttsPitch) }
+                                            }
+                                        )
+                                        if (availableTtsLanguages.isEmpty()) {
+                                            DropdownMenuItem(
+                                                text = { Text("No languages available", color = MenuTextColor.copy(alpha = 0.7f)) },
+                                                onClick = { ttsLanguageExpanded = false }
+                                            )
+                                        } else {
+                                            availableTtsLanguages.forEach { languageCode ->
+                                                val selected = languageCode == ttsLanguageCode
+                                                DropdownMenuItem(
+                                                    text = { Text(Locale(languageCode).getDisplayLanguage(Locale.getDefault()), color = MenuTextColor) },
+                                                    trailingIcon = { Text(if (selected) "✓" else "", color = themeAccent) },
+                                                    onClick = {
+                                                        ttsLanguageExpanded = false
+                                                        ttsLanguageCode = languageCode
+                                                        ttsVoiceName = ""
+                                                        scope.launch { prefs.saveTtsSettings(ttsLanguageCode, ttsVoiceName, ttsSpeechRate, ttsPitch) }
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Text("Voice", color = themeAccent.copy(alpha = 0.78f))
+                                Box {
+                                    TextButton(
+                                        onClick = { ttsVoiceExpanded = true },
+                                        modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
+                                    ) {
+                                        val selectedVoiceLabel = availableTtsVoices.firstOrNull { it.name == ttsVoiceName }
+                                            ?.let { voice -> "${voice.name} (${voice.locale.displayName})" }
+                                            ?: "System default"
+                                        Text("$selectedVoiceLabel ▼", color = themeAccent)
+                                    }
+                                    DropdownMenu(
+                                        expanded = ttsVoiceExpanded,
+                                        onDismissRequest = { ttsVoiceExpanded = false },
+                                        containerColor = MenuBackgroundColor
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("System default", color = MenuTextColor) },
+                                            trailingIcon = { Text(if (ttsVoiceName.isBlank()) "✓" else "", color = themeAccent) },
+                                            onClick = {
+                                                ttsVoiceExpanded = false
+                                                ttsVoiceName = ""
+                                                scope.launch { prefs.saveTtsSettings(ttsLanguageCode, ttsVoiceName, ttsSpeechRate, ttsPitch) }
+                                            }
+                                        )
+                                        val filteredVoices = availableTtsVoices.filter {
+                                            ttsLanguageCode.isBlank() || it.locale.language == ttsLanguageCode
+                                        }
+                                        if (filteredVoices.isEmpty()) {
+                                            DropdownMenuItem(
+                                                text = { Text("No voices for this language", color = MenuTextColor.copy(alpha = 0.7f)) },
+                                                onClick = { ttsVoiceExpanded = false }
+                                            )
+                                        } else {
+                                            filteredVoices.forEach { voice ->
+                                                val selected = voice.name == ttsVoiceName
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Column {
+                                                            Text(voice.name, color = MenuTextColor)
+                                                            Text(
+                                                                "${voice.locale.displayName} · ${voice.features.size} features",
+                                                                color = MenuTextColor.copy(alpha = 0.7f),
+                                                                fontSize = 12.sp,
+                                                                maxLines = 1
+                                                            )
+                                                        }
+                                                    },
+                                                    trailingIcon = { Text(if (selected) "✓" else "", color = themeAccent) },
+                                                    onClick = {
+                                                        ttsVoiceExpanded = false
+                                                        ttsVoiceName = voice.name
+                                                        scope.launch { prefs.saveTtsSettings(ttsLanguageCode, ttsVoiceName, ttsSpeechRate, ttsPitch) }
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Text("Speech rate", color = themeAccent.copy(alpha = 0.78f))
+                                Slider(
+                                    value = ttsSpeechRate,
+                                    onValueChange = {
+                                        ttsSpeechRate = it
+                                        scope.launch { prefs.saveTtsSettings(ttsLanguageCode, ttsVoiceName, ttsSpeechRate, ttsPitch) }
+                                    },
+                                    valueRange = 0.5f..2f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = themeAccent,
+                                        activeTrackColor = themeAccent,
+                                        activeTickColor = themeAccent,
+                                        inactiveTrackColor = themeAccent.copy(alpha = 0.28f),
+                                        inactiveTickColor = themeAccent.copy(alpha = 0.28f)
+                                    )
+                                )
+                                Text("${ttsSpeechRate.formatTtsValue()}x", color = themeAccent.copy(alpha = 0.72f))
+
+                                Text("Pitch", color = themeAccent.copy(alpha = 0.78f))
+                                Slider(
+                                    value = ttsPitch,
+                                    onValueChange = {
+                                        ttsPitch = it
+                                        scope.launch { prefs.saveTtsSettings(ttsLanguageCode, ttsVoiceName, ttsSpeechRate, ttsPitch) }
+                                    },
+                                    valueRange = 0.5f..2f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = themeAccent,
+                                        activeTrackColor = themeAccent,
+                                        activeTickColor = themeAccent,
+                                        inactiveTrackColor = themeAccent.copy(alpha = 0.28f),
+                                        inactiveTickColor = themeAccent.copy(alpha = 0.28f)
+                                    )
+                                )
+                                Text(ttsPitch.formatTtsValue(), color = themeAccent.copy(alpha = 0.72f))
+
+                                Text("Test current verse", style = MaterialTheme.typography.titleSmall, color = themeAccent)
+                                Button(
+                                    onClick = {
+                                        val previewVerse = verses.firstOrNull { it.number == currentVerse }
+                                        if (previewVerse != null) {
+                                            speakVerse("${bookName(currentBook)} $currentChapter:$currentVerse", previewVerse.text, previewVerse.number)
+                                        } else {
+                                            ttsStatus = "No current verse is loaded to test."
+                                        }
+                                    },
+                                    enabled = ttsReady && verses.any { it.number == currentVerse },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = themeHighlight,
+                                        contentColor = themeAccent
+                                    ),
+                                    border = BorderStroke(1.dp, themeBorder)
+                                ) {
+                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                                    Text("Test current verse")
+                                }
+
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -2018,7 +2614,8 @@ private fun SearchLibraryContent(
             listOf(
                 LibrarySection.Bookmarks to "Bookmarks",
                 LibrarySection.History to "History",
-                LibrarySection.Notes to "Notes"
+                LibrarySection.Notes to "Notes",
+                LibrarySection.Plans to "Plans"
             ).forEach { (section, label) ->
                 val selected = librarySection == section
                 TextButton(
@@ -2094,6 +2691,11 @@ private fun SearchLibraryContent(
                 Text("Notes", style = MaterialTheme.typography.titleMedium, color = themeAccent)
                 Text("${bookName(activeReference.book)} ${activeReference.chapter}:${activeReference.verse}", color = contentSecondary)
                 notesContent()
+            }
+
+            LibrarySection.Plans -> {
+                Text("Reading plans", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                Text("Reading plan management is available in the plans screen.", color = contentSecondary)
             }
         }
     }
@@ -2215,6 +2817,10 @@ private data class ReaderSettings(
     val themeColorIndex: Int,
     val themeMode: ThemeModePreference,
     val useAndroidPrimaryTheme: Boolean,
+    val ttsLanguageCode: String,
+    val ttsVoiceName: String,
+    val ttsSpeechRate: Float,
+    val ttsPitch: Float,
     val librarySection: LibrarySection,
     val libraryBook: Int,
     val libraryChapter: Int,
@@ -2232,6 +2838,10 @@ private class ReaderPreferencesStore(private val context: Context) {
     private val themeColorIndexKey = intPreferencesKey("theme_color_index")
     private val themeModeKey = stringPreferencesKey("theme_mode")
     private val useAndroidPrimaryThemeKey = booleanPreferencesKey("use_android_primary_theme")
+    private val ttsLanguageCodeKey = stringPreferencesKey("tts_language_code")
+    private val ttsVoiceNameKey = stringPreferencesKey("tts_voice_name")
+    private val ttsSpeechRateKey = floatPreferencesKey("tts_speech_rate")
+    private val ttsPitchKey = floatPreferencesKey("tts_pitch")
     private val librarySectionKey = stringPreferencesKey("library_section")
     private val libraryBookKey = intPreferencesKey("library_book")
     private val libraryChapterKey = intPreferencesKey("library_chapter")
@@ -2251,6 +2861,10 @@ private class ReaderPreferencesStore(private val context: Context) {
                 runCatching { ThemeModePreference.valueOf(raw) }.getOrNull()
             } ?: ThemeModePreference.System,
             useAndroidPrimaryTheme = prefs[useAndroidPrimaryThemeKey] ?: false,
+            ttsLanguageCode = prefs[ttsLanguageCodeKey] ?: "",
+            ttsVoiceName = prefs[ttsVoiceNameKey] ?: "",
+            ttsSpeechRate = prefs[ttsSpeechRateKey] ?: 1f,
+            ttsPitch = prefs[ttsPitchKey] ?: 1f,
             librarySection = prefs[librarySectionKey]?.let { raw ->
                 runCatching { LibrarySection.valueOf(raw) }.getOrNull()
             } ?: LibrarySection.Bookmarks,
@@ -2292,6 +2906,15 @@ private class ReaderPreferencesStore(private val context: Context) {
     suspend fun saveThemeMode(themeMode: ThemeModePreference) {
         context.dataStore.edit {
             it[themeModeKey] = themeMode.name
+        }
+    }
+
+    suspend fun saveTtsSettings(languageCode: String, voiceName: String, speechRate: Float, pitch: Float) {
+        context.dataStore.edit {
+            it[ttsLanguageCodeKey] = languageCode
+            it[ttsVoiceNameKey] = voiceName
+            it[ttsSpeechRateKey] = speechRate
+            it[ttsPitchKey] = pitch
         }
     }
 
@@ -2949,4 +3572,15 @@ private fun bibleGatewayVersionCode(version: InstalledVersion?): String {
         "YLT" -> "YLT"
         else -> compact.ifBlank { "NIV" }
     }
+}
+
+private fun Float.formatTtsValue(): String {
+    return String.format(Locale.US, "%.2f", this)
+}
+
+@Suppress("DEPRECATION")
+private fun appVersionName(context: Context): String {
+    return runCatching {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+    }.getOrNull().orEmpty().ifBlank { "Unknown" }
 }

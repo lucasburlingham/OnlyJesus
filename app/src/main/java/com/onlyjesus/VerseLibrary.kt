@@ -57,7 +57,8 @@ data class ReadingHistoryEntry(
 enum class LibrarySection {
     Bookmarks,
     History,
-    Notes
+    Notes,
+    Plans
 }
 
 data class VerseReference(val book: Int, val chapter: Int, val verse: Int)
