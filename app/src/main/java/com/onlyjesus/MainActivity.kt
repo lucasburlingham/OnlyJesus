@@ -104,6 +104,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextRange
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -244,6 +246,12 @@ private enum class ReaderPage {
     Library
 }
 
+private enum class LibraryTopSection {
+    Search,
+    Timeline,
+    Plans
+}
+
 private enum class ThemeModePreference {
     Light,
     System,
@@ -310,6 +318,7 @@ private fun ReaderScreen(context: Context) {
     val repository = remember { BibleRepository(context) }
     val reader = remember { JsonBibleReader() }
     val libraryStore = remember { VerseLibraryStore(context) }
+    val readingPlanStore = remember { ReadingPlanStore(context) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val appContext = context.applicationContext
 
@@ -379,9 +388,15 @@ private fun ReaderScreen(context: Context) {
     val readingHistory = remember { mutableStateListOf<ReadingHistoryEntry>() }
     var selectedLibraryVerse by remember { mutableStateOf<VerseReference?>(null) }
     val noteEditorState = rememberRichTextState()
+    var libraryTopSection by remember { mutableStateOf(LibraryTopSection.Search) }
     var librarySection by remember { mutableStateOf(LibrarySection.Bookmarks) }
     val searchScrollState = rememberScrollState()
-    val libraryScrollState = rememberScrollState()
+    val readingPlans = remember { mutableStateListOf<ReadingPlan>() }
+    var readingPlansStatus by remember { mutableStateOf("No reading plans yet.") }
+    var readingPlansLoading by remember { mutableStateOf(true) }
+    var selectedPlanTemplateIndex by remember { mutableStateOf(0) }
+    var newPlanTitle by remember { mutableStateOf("") }
+    var expandedPlanId by remember { mutableStateOf<String?>(null) }
     val availableTtsVoices = remember { mutableStateListOf<Voice>() }
     val availableTtsLanguages = remember { mutableStateListOf<String>() }
     var ttsPlaybackVerses by remember { mutableStateOf<List<Verse>>(emptyList()) }
@@ -420,6 +435,18 @@ private fun ReaderScreen(context: Context) {
                 .build()
         )
         session.isActive = isSpeaking || ttsPlaybackVerses.isNotEmpty()
+    }
+
+    fun isSupportedTtsVoice(voice: Voice): Boolean {
+        return voice.locale.language == "en" && voice.locale.country == "US"
+    }
+
+    fun ttsLanguageLabel(languageCode: String): String {
+        return if (languageCode == "en") {
+            "English (United States)"
+        } else {
+            Locale(languageCode).getDisplayLanguage(Locale.getDefault())
+        }
     }
 
     fun requestSpeechAudioFocus(): Boolean {
@@ -521,7 +548,7 @@ private fun ReaderScreen(context: Context) {
         textToSpeech.setSpeechRate(ttsSpeechRate.coerceIn(0.5f, 2.0f))
         textToSpeech.setPitch(ttsPitch.coerceIn(0.5f, 2.0f))
         val selectedVoice = availableTtsVoices.firstOrNull {
-            it.name == ttsVoiceName && (ttsLanguageCode.isBlank() || it.locale.language == ttsLanguageCode)
+            it.name == ttsVoiceName && isSupportedTtsVoice(it)
         }
         if (selectedVoice != null) {
             textToSpeech.voice = selectedVoice
@@ -582,6 +609,13 @@ private fun ReaderScreen(context: Context) {
 
     mediaSession = remember(appContext) {
         MediaSession(appContext, "OnlyJesusTts").apply {
+            setPlaybackToLocal(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            isActive = false
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
                     mainHandler.post { resumeReading() }
@@ -651,19 +685,15 @@ private fun ReaderScreen(context: Context) {
         availableTtsVoices.addAll(
             textToSpeech.voices
                 .orEmpty()
-                .sortedWith(compareBy<Voice> { it.locale.language }.thenBy { it.locale.country }.thenBy { it.name })
+                .filter(::isSupportedTtsVoice)
+                .sortedWith(compareBy<Voice> { it.name })
         )
         availableTtsLanguages.clear()
-        availableTtsLanguages.addAll(
-            availableTtsVoices
-                .map { it.locale.language }
-                .distinct()
-                .sortedWith(compareBy { Locale(it).getDisplayLanguage(Locale.getDefault()) })
-        )
+        availableTtsLanguages.add("en")
         if (ttsLanguageCode.isNotBlank() && availableTtsLanguages.none { it == ttsLanguageCode }) {
             ttsLanguageCode = ""
         }
-        if (ttsLanguageCode.isNotBlank() && availableTtsVoices.none { it.name == ttsVoiceName && it.locale.language == ttsLanguageCode }) {
+        if (ttsLanguageCode.isNotBlank() && availableTtsVoices.none { it.name == ttsVoiceName && isSupportedTtsVoice(it) }) {
             ttsVoiceName = ""
         }
         if (ttsVoiceName.isNotBlank() && availableTtsVoices.none { it.name == ttsVoiceName }) {
@@ -734,9 +764,13 @@ private fun ReaderScreen(context: Context) {
         speakVerses(referenceLabel, listOf(Verse(verseNumber, verseText)))
     }
 
-    fun persistLibraryState(section: LibrarySection = librarySection, reference: VerseReference? = selectedLibraryVerse) {
+    fun persistLibraryState(
+        topSection: LibraryTopSection = libraryTopSection,
+        section: LibrarySection = librarySection,
+        reference: VerseReference? = selectedLibraryVerse
+    ) {
         scope.launch {
-            prefs.saveLibraryState(section, reference)
+            prefs.saveLibraryState(topSection, section, reference)
         }
     }
 
@@ -787,6 +821,90 @@ private fun ReaderScreen(context: Context) {
     fun refreshFonts() {
         fontOptions.clear()
         fontOptions.addAll(repository.installedFonts())
+    }
+
+    suspend fun orderedChaptersForSelectedVersion(): List<ChapterLocation> = withContext(Dispatchers.IO) {
+        val version = selectedVersion ?: return@withContext emptyList()
+        val books = reader.availableBooks(version.file)
+        buildList {
+            for (book in books) {
+                val chapters = reader.availableChapters(version.file, book)
+                for (chapter in chapters) {
+                    add(ChapterLocation(book, chapter))
+                }
+            }
+        }
+    }
+
+    fun saveReadingPlans() {
+        scope.launch {
+            readingPlanStore.savePlans(readingPlans.toList())
+        }
+    }
+
+    fun reloadReadingPlans() {
+        scope.launch {
+            readingPlansLoading = true
+            val loaded = readingPlanStore.loadPlans()
+            readingPlans.clear()
+            readingPlans.addAll(loaded)
+            readingPlansStatus = if (loaded.isEmpty()) {
+                "No reading plans yet."
+            } else {
+                "Loaded ${loaded.size} reading plan(s)."
+            }
+            readingPlansLoading = false
+        }
+    }
+
+    fun createReadingPlan(template: ReadingPlanTemplate) {
+        scope.launch {
+            val version = selectedVersion
+            if (version == null) {
+                readingPlansStatus = "Choose a Bible version first."
+                return@launch
+            }
+            val orderedChapters = orderedChaptersForSelectedVersion()
+            if (orderedChapters.isEmpty()) {
+                readingPlansStatus = "No chapters found in the current version."
+                return@launch
+            }
+            val plan = generateReadingPlan(
+                template = template,
+                versionPath = version.file.absolutePath,
+                versionLabel = version.label,
+                orderedChapters = orderedChapters,
+                titleOverride = newPlanTitle.trim().ifBlank { null }
+            )
+            readingPlans.add(0, plan)
+            expandedPlanId = plan.id
+            readingPlansStatus = "Created ${plan.title}."
+            newPlanTitle = ""
+            saveReadingPlans()
+        }
+    }
+
+    fun updateReadingPlan(updatedPlan: ReadingPlan) {
+        val index = readingPlans.indexOfFirst { it.id == updatedPlan.id }
+        if (index >= 0) {
+            readingPlans[index] = updatedPlan
+            saveReadingPlans()
+        }
+    }
+
+    fun togglePlanChapterCompletion(plan: ReadingPlan, dayIndex: Int, chapter: ReadingPlanChapterRef) {
+        updateReadingPlan(toggleReadingPlanChapterCompletion(plan, dayIndex, chapter))
+    }
+
+    fun openReadingPlanVerse(plan: ReadingPlan, reference: ReadingPlanChapterRef) {
+        val matchingVersion = installedVersions.firstOrNull { it.file.absolutePath == plan.versionPath }
+        if (matchingVersion != null) {
+            selectedVersion = matchingVersion
+        }
+        currentBook = reference.book
+        currentChapter = reference.chapter
+        currentVerse = 1
+        currentPage = ReaderPage.Scripture
     }
 
     val importFontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -914,7 +1032,7 @@ private fun ReaderScreen(context: Context) {
 
     fun bookmarkedAnnotations(): List<VerseAnnotation> = verseAnnotations
         .filter {
-            it.versionPath == currentVersionPath() && (it.bookmarked || it.highlighted || it.noteMarkdown.isNotBlank())
+            it.versionPath == currentVersionPath() && it.bookmarked
         }
         .sortedWith(compareBy<VerseAnnotation> { annotation -> annotation.book }
             .thenBy { annotation -> annotation.chapter }
@@ -1064,6 +1182,7 @@ private fun ReaderScreen(context: Context) {
         ttsVoiceName = saved.ttsVoiceName
         ttsSpeechRate = saved.ttsSpeechRate
         ttsPitch = saved.ttsPitch
+        libraryTopSection = saved.libraryTopSection
         librarySection = saved.librarySection
         selectedLibraryVerse = if (saved.libraryBook > 0 && saved.libraryChapter > 0 && saved.libraryVerse > 0) {
             VerseReference(saved.libraryBook, saved.libraryChapter, saved.libraryVerse)
@@ -1075,6 +1194,14 @@ private fun ReaderScreen(context: Context) {
         verseAnnotations.addAll(libraryStore.loadAnnotations())
         readingHistory.clear()
         readingHistory.addAll(libraryStore.loadHistory())
+        readingPlans.clear()
+        readingPlans.addAll(readingPlanStore.loadPlans())
+        readingPlansStatus = if (readingPlans.isEmpty()) {
+            "No reading plans yet."
+        } else {
+            "Loaded ${readingPlans.size} reading plan(s)."
+        }
+        readingPlansLoading = false
 
         refreshInstalled()
         refreshFonts()
@@ -1671,6 +1798,457 @@ private fun ReaderScreen(context: Context) {
                             }
                         }
 
+                        ReaderPage.Library -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(searchScrollState)
+                                    .padding(bottom = CONTENT_BOTTOM_PADDING.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(0.dp)
+                                ) {
+                                    listOf(
+                                        LibraryTopSection.Search to "Search",
+                                        LibraryTopSection.Timeline to "Timeline",
+                                        LibraryTopSection.Plans to "Plans"
+                                    ).forEach { (section, label) ->
+                                        val selected = libraryTopSection == section
+                                        Button(
+                                            onClick = {
+                                                libraryTopSection = section
+                                                persistLibraryState(topSection = section)
+                                            },
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxWidth(),
+                                            shape = RoundedCornerShape(0.dp),
+                                            border = BorderStroke(
+                                                1.dp,
+                                                if (selected) themeBorder else navInactiveBorder
+                                            ),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (selected) themeHighlight else navInactiveContainer,
+                                                contentColor = if (selected) contentOnAccent else themeAccent.copy(alpha = 0.72f)
+                                            )
+                                        ) {
+                                            Text(label)
+                                        }
+                                    }
+                                }
+
+                                when (libraryTopSection) {
+                                    LibraryTopSection.Search -> {
+                                        Text(
+                                            text = if (selectedVersion == null) "Pick a Bible version in settings to search." else "Search the current Bible version.",
+                                            color = themeAccent.copy(alpha = 0.78f)
+                                        )
+
+                                        OutlinedTextField(
+                                            value = searchQuery,
+                                            onValueChange = { searchQuery = it },
+                                            label = { Text("Search verses") },
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+
+                                        Button(
+                                            enabled = !isBusy && selectedVersion != null && searchQuery.isNotBlank(),
+                                            onClick = {
+                                                scope.launch {
+                                                    val version = selectedVersion ?: return@launch
+                                                    isBusy = true
+                                                    val query = searchQuery.trim()
+                                                    val matches = withContext(Dispatchers.IO) {
+                                                        reader.searchVersesLike(version.file, query)
+                                                    }
+                                                    searchResults.clear()
+                                                    searchResults.addAll(matches)
+                                                    status = if (matches.isEmpty()) {
+                                                        "No results for \"$query\"."
+                                                    } else {
+                                                        "Found ${matches.size} result(s) for \"$query\"."
+                                                    }
+                                                    isBusy = false
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = themeHighlight,
+                                                contentColor = themeAccent
+                                            ),
+                                            border = BorderStroke(1.dp, themeBorder)
+                                        ) { Text("Find") }
+
+                                        Text(status, color = themeAccent.copy(alpha = 0.78f))
+
+                                        LazyColumn(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(320.dp),
+                                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            items(searchResults) { result ->
+                                                var resultMenuExpanded by remember(result.book, result.chapter, result.verse, result.text) { mutableStateOf(false) }
+                                                val resultText = "${bookName(result.book)} ${result.chapter}:${result.verse} ${result.text}"
+                                                Box(modifier = Modifier.fillMaxWidth()) {
+                                                    TextButton(onClick = {
+                                                        currentBook = result.book
+                                                        currentChapter = result.chapter
+                                                        currentVerse = result.verse
+                                                        searchResults.clear()
+                                                        currentPage = ReaderPage.Scripture
+                                                        loadChapter()
+                                                    }, modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .pointerInput(result.book, result.chapter, result.verse, result.text) {
+                                                            detectTapGestures(onLongPress = { resultMenuExpanded = true })
+                                                        }) {
+                                                        val preview = result.text.take(SEARCH_RESULT_PREVIEW_LENGTH).let {
+                                                            if (result.text.length > SEARCH_RESULT_PREVIEW_LENGTH) "$it…" else it
+                                                        }
+                                                        Text("${bookName(result.book)} C${result.chapter} V${result.verse} $preview")
+                                                    }
+                                                    DropdownMenu(
+                                                        expanded = resultMenuExpanded,
+                                                        onDismissRequest = { resultMenuExpanded = false },
+                                                        containerColor = MenuBackgroundColor
+                                                    ) {
+                                                        DropdownMenuItem(
+                                                            text = { Text("Copy verse", color = MenuTextColor) },
+                                                            onClick = {
+                                                                resultMenuExpanded = false
+                                                                copyText(context, resultText)
+                                                            }
+                                                        )
+                                                        DropdownMenuItem(
+                                                            text = { Text("Share verse", color = MenuTextColor) },
+                                                            onClick = {
+                                                                resultMenuExpanded = false
+                                                                shareText(context, "${selectedVersion?.label ?: "Bible"} - ${bookName(result.book)} ${result.chapter}:${result.verse}", resultText)
+                                                            }
+                                                        )
+                                                        DropdownMenuItem(
+                                                            text = { Text("Open in BibleGateway", color = MenuTextColor) },
+                                                            onClick = {
+                                                                resultMenuExpanded = false
+                                                                openBibleGateway(
+                                                                    context = context,
+                                                                    reference = "${bookName(result.book)} ${result.chapter}:${result.verse}",
+                                                                    version = selectedVersion
+                                                                )
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .border(1.dp, themeBorder, RoundedCornerShape(12.dp))
+                                                .background(themeHighlight.copy(alpha = 0.14f), RoundedCornerShape(12.dp))
+                                                .padding(12.dp)
+                                        ) {
+                                            Button(
+                                                enabled = !isBusy && selectedVersion != null,
+                                                onClick = { loadRandomChapter() },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = themeAccent,
+                                                    contentColor = contentOnAccent
+                                                ),
+                                                border = BorderStroke(1.dp, themeBorder)
+                                            ) {
+                                                Text("Random")
+                                            }
+                                        }
+                                    }
+
+                                    LibraryTopSection.Timeline -> {
+                                        val activeReference = selectedLibraryVerse ?: VerseReference(currentBook, currentChapter, currentVerse)
+                                        val activeAnnotation = annotationFor(activeReference.book, activeReference.chapter, activeReference.verse)
+                                        val bookmarks = bookmarkedAnnotations()
+                                        val highlightedItems = verseAnnotations
+                                            .filter { it.versionPath == currentVersionPath() && it.highlighted }
+                                        val recentHistory = readingHistory.take(20)
+
+                                        SearchLibraryContent(
+                                            context = context,
+                                            librarySection = librarySection,
+                                            bookmarks = bookmarks,
+                                            highlights = highlightedItems,
+                                            recentHistory = recentHistory,
+                                            activeReference = activeReference,
+                                            activeAnnotation = activeAnnotation,
+                                            themeAccent = themeAccent,
+                                            themeBorder = themeBorder,
+                                            themeHighlight = themeHighlight,
+                                            borderNeutral = borderNeutral,
+                                            panelColor = panelColor,
+                                            contentSecondary = contentSecondary,
+                                            onOpenVerse = { book, chapter, verse ->
+                                                currentBook = book
+                                                currentChapter = chapter
+                                                currentVerse = verse
+                                                currentPage = ReaderPage.Scripture
+                                                loadChapter()
+                                            },
+                                            onEditVerse = { reference ->
+                                                refreshNoteEditor(reference)
+                                                librarySection = LibrarySection.Notes
+                                            },
+                                            onSwitchSection = { section ->
+                                                librarySection = section
+                                                persistLibraryState(section = section)
+                                            },
+                                            notesContent = {
+                                                Column(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                    ) {
+                                                        IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(fontWeight = FontWeight.Bold)) }) {
+                                                            Icon(Icons.Outlined.FormatBold, contentDescription = "Bold", tint = themeAccent)
+                                                        }
+                                                        IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(fontStyle = FontStyle.Italic)) }) {
+                                                            Icon(Icons.Outlined.FormatItalic, contentDescription = "Italic", tint = themeAccent)
+                                                        }
+                                                        IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(textDecoration = TextDecoration.Underline)) }) {
+                                                            Icon(Icons.Outlined.FormatUnderlined, contentDescription = "Underline", tint = themeAccent)
+                                                        }
+                                                        IconButton(onClick = { noteEditorState.toggleCodeSpan() }) {
+                                                            Icon(Icons.Outlined.Code, contentDescription = "Code", tint = themeAccent)
+                                                        }
+                                                        IconButton(onClick = { noteEditorState.toggleUnorderedList() }) {
+                                                            Icon(Icons.AutoMirrored.Outlined.FormatListBulleted, contentDescription = "Bulleted list", tint = themeAccent)
+                                                        }
+                                                        IconButton(onClick = { noteEditorState.toggleOrderedList() }) {
+                                                            Icon(Icons.Outlined.FormatListNumbered, contentDescription = "Numbered list", tint = themeAccent)
+                                                        }
+                                                    }
+
+                                                    OutlinedRichTextEditor(
+                                                        state = noteEditorState,
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        minLines = 8,
+                                                        textStyle = androidx.compose.ui.text.TextStyle(
+                                                            fontFamily = selectedFontFamily(),
+                                                            fontSize = fontSizeSp.sp,
+                                                            color = contentPrimary
+                                                        ),
+                                                        label = { Text("Rich markdown note", color = contentSecondary) },
+                                                        placeholder = { Text("Write a formatted note", color = contentSecondary) }
+                                                    )
+
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        Button(
+                                                            onClick = { saveSelectedNote() },
+                                                            colors = ButtonDefaults.buttonColors(
+                                                                containerColor = themeAccent,
+                                                                contentColor = contentOnAccent
+                                                            )
+                                                        ) { Text("Save note") }
+                                                        Button(
+                                                            onClick = {
+                                                                setVerseBookmark(activeReference.book, activeReference.chapter, activeReference.verse, activeAnnotation?.bookmarked != true)
+                                                            },
+                                                            colors = ButtonDefaults.buttonColors(
+                                                                containerColor = themeHighlight,
+                                                                contentColor = contentOnAccent
+                                                            )
+                                                        ) { Text(if (activeAnnotation?.bookmarked == true) "Unbookmark" else "Bookmark") }
+                                                        Button(
+                                                            onClick = {
+                                                                setVerseHighlight(activeReference.book, activeReference.chapter, activeReference.verse, activeAnnotation?.highlighted != true)
+                                                            },
+                                                            colors = ButtonDefaults.buttonColors(
+                                                                containerColor = themeHighlight,
+                                                                contentColor = contentOnAccent
+                                                            )
+                                                        ) { Text(if (activeAnnotation?.highlighted == true) "Unhighlight" else "Highlight") }
+                                                        IconButton(onClick = { shareSelectedMarkdown() }) {
+                                                            Icon(Icons.Outlined.Share, contentDescription = "Share note", tint = themeAccent)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        )
+                                    }
+
+                                    LibraryTopSection.Plans -> {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            Text("Reading plans", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                                            Text(
+                                                text = if (selectedVersion == null) {
+                                                    "Select a Bible version in Settings before creating a plan."
+                                                } else {
+                                                    "Create a schedule from the current Bible version and track chapter completion."
+                                                },
+                                                color = contentSecondary
+                                            )
+
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .border(1.dp, themeBorder, RoundedCornerShape(12.dp))
+                                                    .background(themeHighlight.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                                                    .padding(12.dp)
+                                            ) {
+                                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                    Text("Create plan", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                                                    OutlinedTextField(
+                                                        value = newPlanTitle,
+                                                        onValueChange = { newPlanTitle = it },
+                                                        label = { Text("Optional title") },
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        singleLine = true
+                                                    )
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                        BuiltInReadingPlanTemplates.forEachIndexed { index, template ->
+                                                            TextButton(
+                                                                onClick = { selectedPlanTemplateIndex = index },
+                                                                modifier = Modifier
+                                                                    .border(
+                                                                        1.dp,
+                                                                        if (selectedPlanTemplateIndex == index) themeBorder else borderNeutral,
+                                                                        RoundedCornerShape(999.dp)
+                                                                    )
+                                                                    .background(
+                                                                        if (selectedPlanTemplateIndex == index) themeHighlight else panelColor,
+                                                                        RoundedCornerShape(999.dp)
+                                                                    )
+                                                            ) {
+                                                                Text(template.title, color = if (selectedPlanTemplateIndex == index) themeAccent else contentSecondary)
+                                                            }
+                                                        }
+                                                    }
+                                                    Text(
+                                                        text = BuiltInReadingPlanTemplates[selectedPlanTemplateIndex].description,
+                                                        color = contentSecondary
+                                                    )
+                                                    Button(
+                                                        enabled = !readingPlansLoading && selectedVersion != null,
+                                                        onClick = {
+                                                            createReadingPlan(BuiltInReadingPlanTemplates[selectedPlanTemplateIndex])
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(
+                                                            containerColor = themeAccent,
+                                                            contentColor = contentOnAccent
+                                                        ),
+                                                        border = BorderStroke(1.dp, themeBorder)
+                                                    ) {
+                                                        Text("Create from current version")
+                                                    }
+                                                }
+                                            }
+
+                                            Text(readingPlansStatus, color = themeAccent.copy(alpha = 0.78f))
+
+                                            if (readingPlansLoading) {
+                                                Text("Loading plans...", color = contentSecondary)
+                                            } else if (readingPlans.isEmpty()) {
+                                                Text("No plans saved yet.", color = contentSecondary)
+                                            } else {
+                                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                    readingPlans.forEach { plan ->
+                                                        val expanded = expandedPlanId == plan.id
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .border(1.dp, themeBorder, RoundedCornerShape(12.dp))
+                                                                .background(panelColor, RoundedCornerShape(12.dp))
+                                                                .padding(12.dp)
+                                                        ) {
+                                                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                                Row(
+                                                                    modifier = Modifier.fillMaxWidth(),
+                                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                                    verticalAlignment = Alignment.CenterVertically
+                                                                ) {
+                                                                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                                        Text(plan.title, style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                                                                        Text(plan.description, color = contentSecondary)
+                                                                        Text(
+                                                                            text = "${plan.progressPercent()}% complete • ${plan.completedChapters()}/${plan.totalChapters()} chapters",
+                                                                            color = contentSecondary
+                                                                        )
+                                                                    }
+                                                                    TextButton(onClick = {
+                                                                        expandedPlanId = if (expanded) null else plan.id
+                                                                    }) {
+                                                                        Text(if (expanded) "Hide" else "Open", color = themeAccent)
+                                                                    }
+                                                                }
+
+                                                                if (expanded) {
+                                                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                                        plan.days.forEach { day ->
+                                                                            Box(
+                                                                                modifier = Modifier
+                                                                                    .fillMaxWidth()
+                                                                                    .border(1.dp, borderNeutral, RoundedCornerShape(10.dp))
+                                                                                    .background(themeHighlight.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                                                                                    .padding(10.dp)
+                                                                            ) {
+                                                                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                                                    Text(
+                                                                                        text = "Day ${day.dayIndex} • ${day.completedCount()}/${day.chapters.size} complete",
+                                                                                        color = themeAccent
+                                                                                    )
+                                                                                    if (day.chapters.isEmpty()) {
+                                                                                        Text("No chapters assigned.", color = contentSecondary)
+                                                                                    } else {
+                                                                                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                                                            day.chapters.forEach { chapter ->
+                                                                                                val done = day.completedChapters.any { it.key() == chapter.key() }
+                                                                                                Row(
+                                                                                                    modifier = Modifier.fillMaxWidth(),
+                                                                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                                                                ) {
+                                                                                                    Button(
+                                                                                                        onClick = {
+                                                                                                            openReadingPlanVerse(plan, chapter)
+                                                                                                            loadChapter()
+                                                                                                        },
+                                                                                                        modifier = Modifier.weight(1f)
+                                                                                                    ) {
+                                                                                                        Text("${bookName(chapter.book)} ${chapter.chapter}")
+                                                                                                    }
+                                                                                                    TextButton(onClick = {
+                                                                                                        togglePlanChapterCompletion(plan, day.dayIndex, chapter)
+                                                                                                    }) {
+                                                                                                        Text(if (done) "Done" else "Mark")
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                          }
+
                         ReaderPage.Search -> {
                             Column(
                                 modifier = Modifier
@@ -1813,6 +2391,7 @@ private fun ReaderScreen(context: Context) {
                                     context = context,
                                     librarySection = librarySection,
                                     bookmarks = bookmarks,
+                                    highlights = verseAnnotations.filter { it.versionPath == currentVersionPath() && it.highlighted },
                                     recentHistory = recentHistory,
                                     activeReference = activeReference,
                                     activeAnnotation = activeAnnotation,
@@ -1835,7 +2414,7 @@ private fun ReaderScreen(context: Context) {
                                     },
                                     onSwitchSection = { section ->
                                         librarySection = section
-                                        persistLibraryState(section)
+                                        persistLibraryState(section = section)
                                     },
                                     notesContent = {
                                         Column(
@@ -1917,32 +2496,6 @@ private fun ReaderScreen(context: Context) {
                                 )
                                 }
                             }
-
-                        ReaderPage.Library -> {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .verticalScroll(libraryScrollState)
-                                    .padding(bottom = CONTENT_BOTTOM_PADDING.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text("Library moved to Search", style = MaterialTheme.typography.titleMedium, color = themeAccent)
-                                Text(
-                                    text = "Use Search to browse bookmarks, history, and notes.",
-                                    color = contentSecondary
-                                )
-                                Button(
-                                    onClick = { currentPage = ReaderPage.Search },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = themeAccent,
-                                        contentColor = contentOnAccent
-                                    ),
-                                    border = BorderStroke(1.dp, themeBorder)
-                                ) {
-                                    Text("Open Search")
-                                }
-                            }
-                        }
 
                         ReaderPage.Settings -> {
                             Column(
@@ -2317,7 +2870,7 @@ private fun ReaderScreen(context: Context) {
                                         val selectedLanguageLabel = if (ttsLanguageCode.isBlank()) {
                                             "System default"
                                         } else {
-                                            Locale(ttsLanguageCode).getDisplayLanguage(Locale.getDefault())
+                                                ttsLanguageLabel(ttsLanguageCode)
                                         }
                                         Text("$selectedLanguageLabel ▼", color = themeAccent)
                                     }
@@ -2338,14 +2891,14 @@ private fun ReaderScreen(context: Context) {
                                         )
                                         if (availableTtsLanguages.isEmpty()) {
                                             DropdownMenuItem(
-                                                text = { Text("No languages available", color = MenuTextColor.copy(alpha = 0.7f)) },
+                                                text = { Text("No English (United States) voices available", color = MenuTextColor.copy(alpha = 0.7f)) },
                                                 onClick = { ttsLanguageExpanded = false }
                                             )
                                         } else {
                                             availableTtsLanguages.forEach { languageCode ->
                                                 val selected = languageCode == ttsLanguageCode
                                                 DropdownMenuItem(
-                                                    text = { Text(Locale(languageCode).getDisplayLanguage(Locale.getDefault()), color = MenuTextColor) },
+                                                    text = { Text(ttsLanguageLabel(languageCode), color = MenuTextColor) },
                                                     trailingIcon = { Text(if (selected) "✓" else "", color = themeAccent) },
                                                     onClick = {
                                                         ttsLanguageExpanded = false
@@ -2366,7 +2919,7 @@ private fun ReaderScreen(context: Context) {
                                         modifier = Modifier.border(1.dp, themeBorder, RoundedCornerShape(8.dp))
                                     ) {
                                         val selectedVoiceLabel = availableTtsVoices.firstOrNull { it.name == ttsVoiceName }
-                                            ?.let { voice -> "${voice.name} (${voice.locale.displayName})" }
+                                            ?.let { voice -> "${voice.name} (English (United States))" }
                                             ?: "System default"
                                         Text("$selectedVoiceLabel ▼", color = themeAccent)
                                     }
@@ -2385,11 +2938,11 @@ private fun ReaderScreen(context: Context) {
                                             }
                                         )
                                         val filteredVoices = availableTtsVoices.filter {
-                                            ttsLanguageCode.isBlank() || it.locale.language == ttsLanguageCode
+                                            isSupportedTtsVoice(it)
                                         }
                                         if (filteredVoices.isEmpty()) {
                                             DropdownMenuItem(
-                                                text = { Text("No voices for this language", color = MenuTextColor.copy(alpha = 0.7f)) },
+                                                text = { Text("No English (United States) voices available", color = MenuTextColor.copy(alpha = 0.7f)) },
                                                 onClick = { ttsVoiceExpanded = false }
                                             )
                                         } else {
@@ -2400,7 +2953,7 @@ private fun ReaderScreen(context: Context) {
                                                         Column {
                                                             Text(voice.name, color = MenuTextColor)
                                                             Text(
-                                                                "${voice.locale.displayName} · ${voice.features.size} features",
+                                                                "English (United States) · ${voice.features.size} features",
                                                                 color = MenuTextColor.copy(alpha = 0.7f),
                                                                 fontSize = 12.sp,
                                                                 maxLines = 1
@@ -2562,6 +3115,23 @@ private fun ReaderScreen(context: Context) {
                         contentColor = if (currentPage == ReaderPage.Search) contentOnAccent else themeAccent.copy(alpha = 0.72f)
                     )
                 ) {
+                    Text("Search")
+                }
+                Button(
+                    onClick = { currentPage = ReaderPage.Library },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    shape = RoundedCornerShape(0.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (currentPage == ReaderPage.Library) themeBorder else navInactiveBorder
+                    ),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (currentPage == ReaderPage.Library) themeHighlight else navInactiveContainer,
+                        contentColor = if (currentPage == ReaderPage.Library) contentOnAccent else themeAccent.copy(alpha = 0.72f)
+                    )
+                ) {
                     Text("Library")
                 }
                 Button(
@@ -2595,6 +3165,7 @@ private fun SearchLibraryContent(
     context: Context,
     librarySection: LibrarySection,
     bookmarks: List<VerseAnnotation>,
+    highlights: List<VerseAnnotation>,
     recentHistory: List<ReadingHistoryEntry>,
     activeReference: VerseReference,
     activeAnnotation: VerseAnnotation?,
@@ -2615,7 +3186,7 @@ private fun SearchLibraryContent(
                 LibrarySection.Bookmarks to "Bookmarks",
                 LibrarySection.History to "History",
                 LibrarySection.Notes to "Notes",
-                LibrarySection.Plans to "Plans"
+                LibrarySection.Highlights to "Highlights"
             ).forEach { (section, label) ->
                 val selected = librarySection == section
                 TextButton(
@@ -2691,6 +3262,40 @@ private fun SearchLibraryContent(
                 Text("Notes", style = MaterialTheme.typography.titleMedium, color = themeAccent)
                 Text("${bookName(activeReference.book)} ${activeReference.chapter}:${activeReference.verse}", color = contentSecondary)
                 notesContent()
+            }
+
+            LibrarySection.Highlights -> {
+                Text("Highlights", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                if (highlights.isEmpty()) {
+                    Text("No highlighted verses yet.", color = contentSecondary)
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        highlights.forEach { item ->
+                            val preview = item.noteMarkdown.take(120).replace('\n', ' ')
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(1.dp, themeBorder, RoundedCornerShape(10.dp))
+                                    .background(themeHighlight.copy(alpha = 0.14f), RoundedCornerShape(10.dp))
+                                    .padding(10.dp)
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text("${bookName(item.book)} ${item.chapter}:${item.verse}", color = themeAccent)
+                                    if (preview.isNotBlank()) {
+                                        Text(preview, color = contentSecondary)
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(onClick = { onOpenVerse(item.book, item.chapter, item.verse) }) { Text("Open") }
+                                        Button(onClick = { onEditVerse(VerseReference(item.book, item.chapter, item.verse)) }) { Text("Edit") }
+                                        Button(onClick = {
+                                            shareText(context, "${bookName(item.book)} ${item.chapter}:${item.verse}", item.noteMarkdown.ifBlank { "Highlight from OnlyJesus" })
+                                        }) { Text("Share") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             LibrarySection.Plans -> {
@@ -2821,6 +3426,7 @@ private data class ReaderSettings(
     val ttsVoiceName: String,
     val ttsSpeechRate: Float,
     val ttsPitch: Float,
+    val libraryTopSection: LibraryTopSection,
     val librarySection: LibrarySection,
     val libraryBook: Int,
     val libraryChapter: Int,
@@ -2842,6 +3448,7 @@ private class ReaderPreferencesStore(private val context: Context) {
     private val ttsVoiceNameKey = stringPreferencesKey("tts_voice_name")
     private val ttsSpeechRateKey = floatPreferencesKey("tts_speech_rate")
     private val ttsPitchKey = floatPreferencesKey("tts_pitch")
+    private val libraryTopSectionKey = stringPreferencesKey("library_top_section")
     private val librarySectionKey = stringPreferencesKey("library_section")
     private val libraryBookKey = intPreferencesKey("library_book")
     private val libraryChapterKey = intPreferencesKey("library_chapter")
@@ -2865,6 +3472,9 @@ private class ReaderPreferencesStore(private val context: Context) {
             ttsVoiceName = prefs[ttsVoiceNameKey] ?: "",
             ttsSpeechRate = prefs[ttsSpeechRateKey] ?: 1f,
             ttsPitch = prefs[ttsPitchKey] ?: 1f,
+            libraryTopSection = prefs[libraryTopSectionKey]?.let { raw ->
+                runCatching { LibraryTopSection.valueOf(raw) }.getOrNull()
+            } ?: LibraryTopSection.Search,
             librarySection = prefs[librarySectionKey]?.let { raw ->
                 runCatching { LibrarySection.valueOf(raw) }.getOrNull()
             } ?: LibrarySection.Bookmarks,
@@ -2918,8 +3528,9 @@ private class ReaderPreferencesStore(private val context: Context) {
         }
     }
 
-    suspend fun saveLibraryState(section: LibrarySection, reference: VerseReference?) {
+    suspend fun saveLibraryState(topSection: LibraryTopSection, section: LibrarySection, reference: VerseReference?) {
         context.dataStore.edit {
+            it[libraryTopSectionKey] = topSection.name
             it[librarySectionKey] = section.name
             it[libraryBookKey] = reference?.book ?: 0
             it[libraryChapterKey] = reference?.chapter ?: 0

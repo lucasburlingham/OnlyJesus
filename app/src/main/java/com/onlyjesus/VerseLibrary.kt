@@ -58,6 +58,7 @@ enum class LibrarySection {
     Bookmarks,
     History,
     Notes,
+    Highlights,
     Plans
 }
 

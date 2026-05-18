@@ -166,13 +166,15 @@ class ReadingPlanStore(private val context: Context) {
 
     suspend fun loadPlans(): List<ReadingPlan> = withContext(Dispatchers.IO) {
         if (!plansFile.exists()) return@withContext emptyList()
-        val array = JSONArray(plansFile.readText())
-        buildList {
-            for (index in 0 until array.length()) {
-                val item = array.optJSONObject(index) ?: continue
-                add(readPlan(item))
-            }
-        }.sortedByDescending { it.updatedAt }
+        runCatching {
+            val array = JSONArray(plansFile.readText())
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    add(readPlan(item))
+                }
+            }.sortedByDescending { it.updatedAt }
+        }.getOrElse { emptyList() }
     }
 
     suspend fun savePlans(items: List<ReadingPlan>) = withContext(Dispatchers.IO) {
@@ -193,13 +195,15 @@ class ReadingPlanStore(private val context: Context) {
 
     suspend fun importPlansJson(jsonText: String): List<ReadingPlan> = withContext(Dispatchers.IO) {
         if (jsonText.isBlank()) return@withContext emptyList()
-        val array = JSONArray(jsonText)
-        buildList {
-            for (index in 0 until array.length()) {
-                val item = array.optJSONObject(index) ?: continue
-                add(readPlan(item))
-            }
-        }.sortedByDescending { it.updatedAt }
+        runCatching {
+            val array = JSONArray(jsonText)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    add(readPlan(item))
+                }
+            }.sortedByDescending { it.updatedAt }
+        }.getOrElse { emptyList() }
     }
 
     private fun readPlan(item: JSONObject): ReadingPlan {
