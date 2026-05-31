@@ -1882,13 +1882,11 @@ private fun ReaderScreen(context: Context) {
 
                                         Text(status, color = themeAccent.copy(alpha = 0.78f))
 
-                                        LazyColumn(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(320.dp),
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth(),
                                             verticalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
-                                            items(searchResults) { result ->
+                                            searchResults.forEach { result ->
                                                 var resultMenuExpanded by remember(result.book, result.chapter, result.verse, result.text) { mutableStateOf(false) }
                                                 val resultText = "${bookName(result.book)} ${result.chapter}:${result.verse} ${result.text}"
                                                 Box(modifier = Modifier.fillMaxWidth()) {
@@ -1939,7 +1937,6 @@ private fun ReaderScreen(context: Context) {
                                                                 )
                                                             }
                                                         )
-                                                    }
                                                 }
                                             }
                                         }
