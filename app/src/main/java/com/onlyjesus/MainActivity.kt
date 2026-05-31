@@ -46,6 +46,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.PaddingValues
@@ -140,6 +141,8 @@ import com.mohamedrejeb.richeditor.model.rememberRichTextState
 import com.mohamedrejeb.richeditor.ui.material3.OutlinedRichTextEditor
 
 private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
+private const val LIBRARY_SEARCH_RESULTS_RENDER_LIMIT = 200
+private val LIBRARY_SEARCH_RESULTS_MAX_HEIGHT = 320.dp
 private const val CONTENT_BOTTOM_PADDING = 96
 private const val API_BIBLE_BASE_URL = "https://rest.api.bible/v1"
 private val ThemeAccentOptions = listOf(
@@ -1881,12 +1884,22 @@ private fun ReaderScreen(context: Context) {
                                         ) { Text("Find") }
 
                                         Text(status, color = themeAccent.copy(alpha = 0.78f))
+                                        val visibleSearchResults = searchResults.take(LIBRARY_SEARCH_RESULTS_RENDER_LIMIT)
+                                        if (searchResults.size > visibleSearchResults.size) {
+                                            Text(
+                                                text = "Showing first ${visibleSearchResults.size} results.",
+                                                color = contentSecondary
+                                            )
+                                        }
 
                                         Column(
-                                            modifier = Modifier.fillMaxWidth(),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(max = LIBRARY_SEARCH_RESULTS_MAX_HEIGHT)
+                                                .verticalScroll(rememberScrollState()),
                                             verticalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
-                                            searchResults.forEach { result ->
+                                            visibleSearchResults.forEach { result ->
                                                 var resultMenuExpanded by remember(result.book, result.chapter, result.verse, result.text) { mutableStateOf(false) }
                                                 val resultText = "${bookName(result.book)} ${result.chapter}:${result.verse} ${result.text}"
                                                 Box(modifier = Modifier.fillMaxWidth()) {
