@@ -161,6 +161,11 @@ fun markReadingPlanChapterCompleted(
     return plan.copy(days = updatedDays, updatedAt = System.currentTimeMillis())
 }
 
+fun removeReadingPlan(
+    plans: List<ReadingPlan>,
+    planId: String
+): List<ReadingPlan> = plans.filterNot { it.id == planId }
+
 class ReadingPlanStore(private val context: Context) {
     private val plansFile = File(context.filesDir, "reading_plans.json")
 
