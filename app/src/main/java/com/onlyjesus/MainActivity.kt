@@ -896,6 +896,23 @@ private fun ReaderScreen(context: Context) {
         updateReadingPlan(toggleReadingPlanChapterCompletion(plan, dayIndex, chapter))
     }
 
+    fun deleteReadingPlan(plan: ReadingPlan) {
+        val updatedPlans = removeReadingPlan(readingPlans.toList(), plan.id)
+        if (updatedPlans.size != readingPlans.size) {
+            readingPlans.clear()
+            readingPlans.addAll(updatedPlans)
+            if (expandedPlanId == plan.id) {
+                expandedPlanId = null
+            }
+            readingPlansStatus = if (readingPlans.isEmpty()) {
+                "No reading plans yet."
+            } else {
+                "Deleted ${plan.title}."
+            }
+            saveReadingPlans()
+        }
+    }
+
     fun openReadingPlanVerse(plan: ReadingPlan, reference: ReadingPlanChapterRef) {
         val matchingVersion = installedVersions.firstOrNull { it.file.absolutePath == plan.versionPath }
         if (matchingVersion != null) {
@@ -2183,10 +2200,17 @@ private fun ReaderScreen(context: Context) {
                                                                             color = contentSecondary
                                                                         )
                                                                     }
-                                                                    TextButton(onClick = {
-                                                                        expandedPlanId = if (expanded) null else plan.id
-                                                                    }) {
-                                                                        Text(if (expanded) "Hide" else "Open", color = themeAccent)
+                                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                                        TextButton(onClick = {
+                                                                            expandedPlanId = if (expanded) null else plan.id
+                                                                        }) {
+                                                                            Text(if (expanded) "Hide" else "Open", color = themeAccent)
+                                                                        }
+                                                                        TextButton(onClick = {
+                                                                            deleteReadingPlan(plan)
+                                                                        }) {
+                                                                            Text("Delete", color = contentSecondary)
+                                                                        }
                                                                     }
                                                                 }
 
