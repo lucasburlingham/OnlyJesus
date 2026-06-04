@@ -250,7 +250,6 @@ private enum class ReaderPage {
 }
 
 private enum class LibraryTopSection {
-    Search,
     Timeline,
     Plans
 }
@@ -304,7 +303,7 @@ private fun ReaderScreen(context: Context) {
         val activity = view.context as? Activity
         if (activity == null) {
             onDispose { }
-        } else {
+                                      else {
             val window = activity.window
             val controller = WindowCompat.getInsetsController(window, view)
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -391,7 +390,7 @@ private fun ReaderScreen(context: Context) {
     val readingHistory = remember { mutableStateListOf<ReadingHistoryEntry>() }
     var selectedLibraryVerse by remember { mutableStateOf<VerseReference?>(null) }
     val noteEditorState = rememberRichTextState()
-    var libraryTopSection by remember { mutableStateOf(LibraryTopSection.Search) }
+    var libraryTopSection by remember { mutableStateOf(LibraryTopSection.Timeline) }
     var librarySection by remember { mutableStateOf(LibrarySection.Bookmarks) }
     val searchScrollState = rememberScrollState()
     val readingPlans = remember { mutableStateListOf<ReadingPlan>() }
@@ -1814,7 +1813,6 @@ private fun ReaderScreen(context: Context) {
                                     horizontalArrangement = Arrangement.spacedBy(0.dp)
                                 ) {
                                     listOf(
-                                        LibraryTopSection.Search to "Search",
                                         LibraryTopSection.Timeline to "Timeline",
                                         LibraryTopSection.Plans to "Plans"
                                     ).forEach { (section, label) ->
@@ -1842,141 +1840,15 @@ private fun ReaderScreen(context: Context) {
                                     }
                                 }
 
-                                when (libraryTopSection) {
-                                    LibraryTopSection.Search -> {
-                                        Text(
-                                            text = if (selectedVersion == null) "Pick a Bible version in settings to search." else "Search the current Bible version.",
-                                            color = themeAccent.copy(alpha = 0.78f)
-                                        )
-
-                                        OutlinedTextField(
-                                            value = searchQuery,
-                                            onValueChange = { searchQuery = it },
-                                            label = { Text("Search verses") },
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-
-                                        Button(
-                                            enabled = !isBusy && selectedVersion != null && searchQuery.isNotBlank(),
-                                            onClick = {
-                                                scope.launch {
-                                                    val version = selectedVersion ?: return@launch
-                                                    isBusy = true
-                                                    val query = searchQuery.trim()
-                                                    val matches = withContext(Dispatchers.IO) {
-                                                        reader.searchVersesLike(version.file, query)
-                                                    }
-                                                    searchResults.clear()
-                                                    searchResults.addAll(matches)
-                                                    status = if (matches.isEmpty()) {
-                                                        "No results for \"$query\"."
-                                                    } else {
-                                                        "Found ${matches.size} result(s) for \"$query\"."
-                                                    }
-                                                    isBusy = false
-                                                }
-                                            },
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = themeHighlight,
-                                                contentColor = themeAccent
-                                            ),
-                                            border = BorderStroke(1.dp, themeBorder)
-                                        ) { Text("Find") }
-
-                                        Text(status, color = themeAccent.copy(alpha = 0.78f))
-                                        val visibleSearchResults = searchResults.take(LIBRARY_SEARCH_RESULTS_RENDER_LIMIT)
-                                        if (searchResults.size > visibleSearchResults.size) {
-                                            Text(
-                                                text = "Showing first ${visibleSearchResults.size} results.",
-                                                color = contentSecondary
-                                            )
-                                        }
-
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .heightIn(max = LIBRARY_SEARCH_RESULTS_MAX_HEIGHT)
-                                                .verticalScroll(rememberScrollState()),
-                                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            visibleSearchResults.forEach { result ->
-                                                var resultMenuExpanded by remember(result.book, result.chapter, result.verse, result.text) { mutableStateOf(false) }
-                                                val resultText = "${bookName(result.book)} ${result.chapter}:${result.verse} ${result.text}"
-                                                Box(modifier = Modifier.fillMaxWidth()) {
-                                                    TextButton(onClick = {
-                                                        currentBook = result.book
-                                                        currentChapter = result.chapter
-                                                        currentVerse = result.verse
-                                                        searchResults.clear()
-                                                        currentPage = ReaderPage.Scripture
-                                                        loadChapter()
-                                                    }, modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .pointerInput(result.book, result.chapter, result.verse, result.text) {
-                                                            detectTapGestures(onLongPress = { resultMenuExpanded = true })
-                                                        }) {
-                                                        val preview = result.text.take(SEARCH_RESULT_PREVIEW_LENGTH).let {
-                                                            if (result.text.length > SEARCH_RESULT_PREVIEW_LENGTH) "$it…" else it
-                                                        }
-                                                        Text("${bookName(result.book)} C${result.chapter} V${result.verse} $preview")
-                                                    }
-                                                    DropdownMenu(
-                                                        expanded = resultMenuExpanded,
-                                                        onDismissRequest = { resultMenuExpanded = false },
-                                                        containerColor = MenuBackgroundColor
-                                                    ) {
-                                                        DropdownMenuItem(
-                                                            text = { Text("Copy verse", color = MenuTextColor) },
-                                                            onClick = {
-                                                                resultMenuExpanded = false
-                                                                copyText(context, resultText)
-                                                            }
-                                                        )
-                                                        DropdownMenuItem(
-                                                            text = { Text("Share verse", color = MenuTextColor) },
-                                                            onClick = {
-                                                                resultMenuExpanded = false
-                                                                shareText(context, "${selectedVersion?.label ?: "Bible"} - ${bookName(result.book)} ${result.chapter}:${result.verse}", resultText)
-                                                            }
-                                                        )
-                                                        DropdownMenuItem(
-                                                            text = { Text("Open in BibleGateway", color = MenuTextColor) },
-                                                            onClick = {
-                                                                resultMenuExpanded = false
-                                                                openBibleGateway(
-                                                                    context = context,
-                                                                    reference = "${bookName(result.book)} ${result.chapter}:${result.verse}",
-                                                                    version = selectedVersion
-                                                                )
-                                                            }
-                                                        )
-                                                }
+                                        when (libraryTopSection) {
+                                            LibraryTopSection.Search -> {
+                                                Text(
+                                                    text = "Search is available on the Search page.",
+                                                    color = themeAccent.copy(alpha = 0.78f)
+                                                )
                                             }
-                                        }
 
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .border(1.dp, themeBorder, RoundedCornerShape(12.dp))
-                                                .background(themeHighlight.copy(alpha = 0.14f), RoundedCornerShape(12.dp))
-                                                .padding(12.dp)
-                                        ) {
-                                            Button(
-                                                enabled = !isBusy && selectedVersion != null,
-                                                onClick = { loadRandomChapter() },
-                                                modifier = Modifier.fillMaxWidth(),
-                                                colors = ButtonDefaults.buttonColors(
-                                                    containerColor = themeAccent,
-                                                    contentColor = contentOnAccent
-                                                ),
-                                                border = BorderStroke(1.dp, themeBorder)
-                                            ) {
-                                                Text("Random")
-                                            }
-                                        }
-                                    }
-
-                                    LibraryTopSection.Timeline -> {
+                                            LibraryTopSection.Timeline -> {
                                         val activeReference = selectedLibraryVerse ?: VerseReference(currentBook, currentChapter, currentVerse)
                                         val activeAnnotation = annotationFor(activeReference.book, activeReference.chapter, activeReference.verse)
                                         val bookmarks = bookmarkedAnnotations()
@@ -2093,7 +1965,7 @@ private fun ReaderScreen(context: Context) {
                                         )
                                     }
 
-                                    LibraryTopSection.Plans -> {
+                                          LibraryTopSection.Plans -> {
                                         Column(
                                             verticalArrangement = Arrangement.spacedBy(12.dp)
                                         ) {
@@ -2298,8 +2170,7 @@ private fun ReaderScreen(context: Context) {
                                             }
                                             isBusy = false
                                         }
-                                    }
-                                ,
+                                    },
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = themeHighlight,
                                         contentColor = themeAccent
@@ -3166,8 +3037,6 @@ private fun ReaderScreen(context: Context) {
     }
 }
 
-}
-
 private fun themeAccentBackground(accent: Color): Color = accent.copy(alpha = 0.12f)
 
 @Composable
@@ -3484,7 +3353,7 @@ private class ReaderPreferencesStore(private val context: Context) {
             ttsPitch = prefs[ttsPitchKey] ?: 1f,
             libraryTopSection = prefs[libraryTopSectionKey]?.let { raw ->
                 runCatching { LibraryTopSection.valueOf(raw) }.getOrNull()
-            } ?: LibraryTopSection.Search,
+            } ?: LibraryTopSection.Timeline,
             librarySection = prefs[librarySectionKey]?.let { raw ->
                 runCatching { LibrarySection.valueOf(raw) }.getOrNull()
             } ?: LibrarySection.Bookmarks,
