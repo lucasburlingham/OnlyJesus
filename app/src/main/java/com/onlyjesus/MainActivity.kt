@@ -108,6 +108,8 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextRange
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -1712,7 +1714,7 @@ private fun ReaderScreen(context: Context) {
                                             val annotation = annotationFor(verse = verse.number)
                                             val noteMarkdown = annotation?.noteMarkdown.orEmpty().trim()
                                             val hasNote = noteMarkdown.isNotEmpty()
-                                            var notePopupExpanded by remember(verse.number, noteMarkdown) { mutableStateOf(false) }
+                                            var notePopupExpanded by remember(verse.number) { mutableStateOf(false) }
                                             val verseText = "${bookName(currentBook)} $currentChapter:${verse.number} ${verse.text}"
                                             val verseDisplay = buildAnnotatedString {
                                                 withStyle(SpanStyle(color = if (verse.number == highlightedVerseNumber) themeMuted else contentSecondary.copy(alpha = 0.55f))) {
@@ -1776,6 +1778,9 @@ private fun ReaderScreen(context: Context) {
                                                                         modifier = Modifier
                                                                             .width(280.dp)
                                                                             .padding(horizontal = 12.dp, vertical = 8.dp)
+                                                                            .semantics {
+                                                                                contentDescription = "Verse note content"
+                                                                            }
                                                                     ) {
                                                                         Text(noteMarkdown, color = MenuTextColor)
                                                                     }
