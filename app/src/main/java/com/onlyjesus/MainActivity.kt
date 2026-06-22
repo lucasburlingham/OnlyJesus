@@ -6,7 +6,6 @@ import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.FormatBold
 import androidx.compose.material.icons.outlined.FormatItalic
-import androidx.compose.material.icons.outlined.FormatListNumbered
 import androidx.compose.material.icons.outlined.FormatUnderlined
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Share
@@ -60,6 +59,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -139,6 +139,7 @@ import kotlin.math.roundToInt
 import com.mohamedrejeb.richeditor.annotation.ExperimentalRichTextApi
 import com.mohamedrejeb.richeditor.model.rememberRichTextState
 import com.mohamedrejeb.richeditor.ui.material3.OutlinedRichTextEditor
+import androidx.compose.material.icons.outlined.FormatListNumbered
 
 private const val SEARCH_RESULT_PREVIEW_LENGTH = 100
 private const val LIBRARY_SEARCH_RESULTS_RENDER_LIMIT = 200
@@ -303,7 +304,7 @@ private fun ReaderScreen(context: Context) {
         val activity = view.context as? Activity
         if (activity == null) {
             onDispose { }
-                                      else {
+        } else {
             val window = activity.window
             val controller = WindowCompat.getInsetsController(window, view)
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -896,23 +897,6 @@ private fun ReaderScreen(context: Context) {
 
     fun togglePlanChapterCompletion(plan: ReadingPlan, dayIndex: Int, chapter: ReadingPlanChapterRef) {
         updateReadingPlan(toggleReadingPlanChapterCompletion(plan, dayIndex, chapter))
-    }
-
-    fun deleteReadingPlan(plan: ReadingPlan) {
-        val updatedPlans = removeReadingPlan(readingPlans.toList(), plan.id)
-        if (updatedPlans.size != readingPlans.size) {
-            readingPlans.clear()
-            readingPlans.addAll(updatedPlans)
-            if (expandedPlanId == plan.id) {
-                expandedPlanId = null
-            }
-            readingPlansStatus = if (readingPlans.isEmpty()) {
-                "No reading plans yet."
-            } else {
-                "Deleted ${plan.title}."
-            }
-            saveReadingPlans()
-        }
     }
 
     fun openReadingPlanVerse(plan: ReadingPlan, reference: ReadingPlanChapterRef) {
@@ -1858,129 +1842,122 @@ private fun ReaderScreen(context: Context) {
                                 }
 
                                         when (libraryTopSection) {
-                                            LibraryTopSection.Search -> {
-                                                Text(
-                                                    text = "Search is available on the Search page.",
-                                                    color = themeAccent.copy(alpha = 0.78f)
+                                            LibraryTopSection.Timeline -> {
+                                                val activeReference = selectedLibraryVerse ?: VerseReference(currentBook, currentChapter, currentVerse)
+                                                val activeAnnotation = annotationFor(activeReference.book, activeReference.chapter, activeReference.verse)
+                                                val bookmarks = bookmarkedAnnotations()
+                                                val highlightedItems = verseAnnotations
+                                                    .filter { it.versionPath == currentVersionPath() && it.highlighted }
+                                                val recentHistory = readingHistory.take(20)
+
+                                                SearchLibraryContent(
+                                                    context = context,
+                                                    librarySection = librarySection,
+                                                    bookmarks = bookmarks,
+                                                    highlights = highlightedItems,
+                                                    recentHistory = recentHistory,
+                                                    activeReference = activeReference,
+                                                    activeAnnotation = activeAnnotation,
+                                                    themeAccent = themeAccent,
+                                                    themeBorder = themeBorder,
+                                                    themeHighlight = themeHighlight,
+                                                    borderNeutral = borderNeutral,
+                                                    panelColor = panelColor,
+                                                    contentSecondary = contentSecondary,
+                                                    onOpenVerse = { book, chapter, verse ->
+                                                        currentBook = book
+                                                        currentChapter = chapter
+                                                        currentVerse = verse
+                                                        currentPage = ReaderPage.Scripture
+                                                        loadChapter()
+                                                    },
+                                                    onEditVerse = { reference ->
+                                                        refreshNoteEditor(reference)
+                                                        librarySection = LibrarySection.Notes
+                                                    },
+                                                    onSwitchSection = { section ->
+                                                        librarySection = section
+                                                        persistLibraryState(section = section)
+                                                    },
+                                                    notesContent = {
+                                                        Column(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                            ) {
+                                                                IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(fontWeight = FontWeight.Bold)) }) {
+                                                                    Icon(Icons.Outlined.FormatBold, contentDescription = "Bold", tint = themeAccent)
+                                                                }
+                                                                IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(fontStyle = FontStyle.Italic)) }) {
+                                                                    Icon(Icons.Outlined.FormatItalic, contentDescription = "Italic", tint = themeAccent)
+                                                                }
+                                                                IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(textDecoration = TextDecoration.Underline)) }) {
+                                                                    Icon(Icons.Outlined.FormatUnderlined, contentDescription = "Underline", tint = themeAccent)
+                                                                }
+                                                                IconButton(onClick = { noteEditorState.toggleCodeSpan() }) {
+                                                                    Icon(Icons.Outlined.Code, contentDescription = "Code", tint = themeAccent)
+                                                                }
+                                                                IconButton(onClick = { noteEditorState.toggleUnorderedList() }) {
+                                                                    Icon(Icons.AutoMirrored.Outlined.FormatListBulleted, contentDescription = "Bulleted list", tint = themeAccent)
+                                                                }
+                                                                IconButton(onClick = { noteEditorState.toggleOrderedList() }) {
+                                                                    Icon(Icons.Outlined.FormatListNumbered, contentDescription = "Numbered list", tint = themeAccent)
+                                                                }
+                                                            }
+
+                                                            OutlinedRichTextEditor(
+                                                                state = noteEditorState,
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                minLines = 8,
+                                                                textStyle = androidx.compose.ui.text.TextStyle(
+                                                                    fontFamily = selectedFontFamily(),
+                                                                    fontSize = fontSizeSp.sp,
+                                                                    color = contentPrimary
+                                                                ),
+                                                                label = { Text("Rich markdown note", color = contentSecondary) },
+                                                                placeholder = { Text("Write a formatted note", color = contentSecondary) }
+                                                            )
+
+                                                            Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                            ) {
+                                                                Button(
+                                                                    onClick = { saveSelectedNote() },
+                                                                    colors = ButtonDefaults.buttonColors(
+                                                                        containerColor = themeAccent,
+                                                                        contentColor = contentOnAccent
+                                                                    )
+                                                                ) { Text("Save note") }
+                                                                Button(
+                                                                    onClick = {
+                                                                        setVerseBookmark(activeReference.book, activeReference.chapter, activeReference.verse, activeAnnotation?.bookmarked != true)
+                                                                    },
+                                                                    colors = ButtonDefaults.buttonColors(
+                                                                        containerColor = themeHighlight,
+                                                                        contentColor = contentOnAccent
+                                                                    )
+                                                                ) { Text(if (activeAnnotation?.bookmarked == true) "Unbookmark" else "Bookmark") }
+                                                                Button(
+                                                                    onClick = {
+                                                                        setVerseHighlight(activeReference.book, activeReference.chapter, activeReference.verse, activeAnnotation?.highlighted != true)
+                                                                    },
+                                                                    colors = ButtonDefaults.buttonColors(
+                                                                        containerColor = themeHighlight,
+                                                                        contentColor = contentOnAccent
+                                                                    )
+                                                                ) { Text(if (activeAnnotation?.highlighted == true) "Unhighlight" else "Highlight") }
+                                                                IconButton(onClick = { shareSelectedMarkdown() }) {
+                                                                    Icon(Icons.Outlined.Share, contentDescription = "Share note", tint = themeAccent)
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 )
                                             }
-
-                                            LibraryTopSection.Timeline -> {
-                                        val activeReference = selectedLibraryVerse ?: VerseReference(currentBook, currentChapter, currentVerse)
-                                        val activeAnnotation = annotationFor(activeReference.book, activeReference.chapter, activeReference.verse)
-                                        val bookmarks = bookmarkedAnnotations()
-                                        val highlightedItems = verseAnnotations
-                                            .filter { it.versionPath == currentVersionPath() && it.highlighted }
-                                        val recentHistory = readingHistory.take(20)
-
-                                        SearchLibraryContent(
-                                            context = context,
-                                            librarySection = librarySection,
-                                            bookmarks = bookmarks,
-                                            highlights = highlightedItems,
-                                            recentHistory = recentHistory,
-                                            activeReference = activeReference,
-                                            activeAnnotation = activeAnnotation,
-                                            themeAccent = themeAccent,
-                                            themeBorder = themeBorder,
-                                            themeHighlight = themeHighlight,
-                                            borderNeutral = borderNeutral,
-                                            panelColor = panelColor,
-                                            contentSecondary = contentSecondary,
-                                            onOpenVerse = { book, chapter, verse ->
-                                                currentBook = book
-                                                currentChapter = chapter
-                                                currentVerse = verse
-                                                currentPage = ReaderPage.Scripture
-                                                loadChapter()
-                                            },
-                                            onEditVerse = { reference ->
-                                                refreshNoteEditor(reference)
-                                                librarySection = LibrarySection.Notes
-                                            },
-                                            onSwitchSection = { section ->
-                                                librarySection = section
-                                                persistLibraryState(section = section)
-                                            },
-                                            notesContent = {
-                                                Column(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                                ) {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                                    ) {
-                                                        IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(fontWeight = FontWeight.Bold)) }) {
-                                                            Icon(Icons.Outlined.FormatBold, contentDescription = "Bold", tint = themeAccent)
-                                                        }
-                                                        IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(fontStyle = FontStyle.Italic)) }) {
-                                                            Icon(Icons.Outlined.FormatItalic, contentDescription = "Italic", tint = themeAccent)
-                                                        }
-                                                        IconButton(onClick = { noteEditorState.toggleSpanStyle(SpanStyle(textDecoration = TextDecoration.Underline)) }) {
-                                                            Icon(Icons.Outlined.FormatUnderlined, contentDescription = "Underline", tint = themeAccent)
-                                                        }
-                                                        IconButton(onClick = { noteEditorState.toggleCodeSpan() }) {
-                                                            Icon(Icons.Outlined.Code, contentDescription = "Code", tint = themeAccent)
-                                                        }
-                                                        IconButton(onClick = { noteEditorState.toggleUnorderedList() }) {
-                                                            Icon(Icons.AutoMirrored.Outlined.FormatListBulleted, contentDescription = "Bulleted list", tint = themeAccent)
-                                                        }
-                                                        IconButton(onClick = { noteEditorState.toggleOrderedList() }) {
-                                                            Icon(Icons.Outlined.FormatListNumbered, contentDescription = "Numbered list", tint = themeAccent)
-                                                        }
-                                                    }
-
-                                                    OutlinedRichTextEditor(
-                                                        state = noteEditorState,
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        minLines = 8,
-                                                        textStyle = androidx.compose.ui.text.TextStyle(
-                                                            fontFamily = selectedFontFamily(),
-                                                            fontSize = fontSizeSp.sp,
-                                                            color = contentPrimary
-                                                        ),
-                                                        label = { Text("Rich markdown note", color = contentSecondary) },
-                                                        placeholder = { Text("Write a formatted note", color = contentSecondary) }
-                                                    )
-
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                    ) {
-                                                        Button(
-                                                            onClick = { saveSelectedNote() },
-                                                            colors = ButtonDefaults.buttonColors(
-                                                                containerColor = themeAccent,
-                                                                contentColor = contentOnAccent
-                                                            )
-                                                        ) { Text("Save note") }
-                                                        Button(
-                                                            onClick = {
-                                                                setVerseBookmark(activeReference.book, activeReference.chapter, activeReference.verse, activeAnnotation?.bookmarked != true)
-                                                            },
-                                                            colors = ButtonDefaults.buttonColors(
-                                                                containerColor = themeHighlight,
-                                                                contentColor = contentOnAccent
-                                                            )
-                                                        ) { Text(if (activeAnnotation?.bookmarked == true) "Unbookmark" else "Bookmark") }
-                                                        Button(
-                                                            onClick = {
-                                                                setVerseHighlight(activeReference.book, activeReference.chapter, activeReference.verse, activeAnnotation?.highlighted != true)
-                                                            },
-                                                            colors = ButtonDefaults.buttonColors(
-                                                                containerColor = themeHighlight,
-                                                                contentColor = contentOnAccent
-                                                            )
-                                                        ) { Text(if (activeAnnotation?.highlighted == true) "Unhighlight" else "Highlight") }
-                                                        IconButton(onClick = { shareSelectedMarkdown() }) {
-                                                            Icon(Icons.Outlined.Share, contentDescription = "Share note", tint = themeAccent)
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        )
-                                    }
 
                                           LibraryTopSection.Plans -> {
                                         Column(
@@ -2082,17 +2059,10 @@ private fun ReaderScreen(context: Context) {
                                                                             color = contentSecondary
                                                                         )
                                                                     }
-                                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                                        TextButton(onClick = {
-                                                                            expandedPlanId = if (expanded) null else plan.id
-                                                                        }) {
-                                                                            Text(if (expanded) "Hide" else "Open", color = themeAccent)
-                                                                        }
-                                                                        TextButton(onClick = {
-                                                                            deleteReadingPlan(plan)
-                                                                        }) {
-                                                                            Text("Delete", color = contentSecondary)
-                                                                        }
+                                                                    TextButton(onClick = {
+                                                                        expandedPlanId = if (expanded) null else plan.id
+                                                                    }) {
+                                                                        Text(if (expanded) "Hide" else "Open", color = themeAccent)
                                                                     }
                                                                 }
 
@@ -2401,6 +2371,7 @@ private fun ReaderScreen(context: Context) {
                                 )
                                 }
                             }
+
 
                         ReaderPage.Settings -> {
                             Column(
@@ -3059,6 +3030,8 @@ private fun ReaderScreen(context: Context) {
             }
         }
     }
+}
+
 }
 
 private fun themeAccentBackground(accent: Color): Color = accent.copy(alpha = 0.12f)
