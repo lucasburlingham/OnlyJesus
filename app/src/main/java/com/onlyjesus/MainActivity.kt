@@ -63,6 +63,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -253,6 +254,7 @@ private enum class ReaderPage {
 }
 
 private enum class LibraryTopSection {
+    Search,
     Timeline,
     Plans
 }
@@ -306,7 +308,7 @@ private fun ReaderScreen(context: Context) {
         val activity = view.context as? Activity
         if (activity == null) {
             onDispose { }
-                                      else {
+        } else {
             val window = activity.window
             val controller = WindowCompat.getInsetsController(window, view)
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -2095,6 +2097,25 @@ private fun ReaderScreen(context: Context) {
 
                                             Text(readingPlansStatus, color = themeAccent.copy(alpha = 0.78f))
 
+                                            var planPendingDelete by remember { mutableStateOf<ReadingPlan?>(null) }
+
+                                            planPendingDelete?.let { pendingPlan ->
+                                                AlertDialog(
+                                                    onDismissRequest = { planPendingDelete = null },
+                                                    title = { Text("Delete plan?") },
+                                                    text = { Text("\"${pendingPlan.title}\" will be permanently deleted.") },
+                                                    confirmButton = {
+                                                        TextButton(onClick = {
+                                                            deleteReadingPlan(pendingPlan)
+                                                            planPendingDelete = null
+                                                        }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                                                    },
+                                                    dismissButton = {
+                                                        TextButton(onClick = { planPendingDelete = null }) { Text("Cancel") }
+                                                    }
+                                                )
+                                            }
+
                                             if (readingPlansLoading) {
                                                 Text("Loading plans...", color = contentSecondary)
                                             } else if (readingPlans.isEmpty()) {
@@ -2131,7 +2152,7 @@ private fun ReaderScreen(context: Context) {
                                                                             Text(if (expanded) "Hide" else "Open", color = themeAccent)
                                                                         }
                                                                         TextButton(onClick = {
-                                                                            deleteReadingPlan(plan)
+                                                                            planPendingDelete = plan
                                                                         }) {
                                                                             Text("Delete", color = contentSecondary)
                                                                         }
@@ -3101,6 +3122,8 @@ private fun ReaderScreen(context: Context) {
             }
         }
     }
+}
+
 }
 
 private fun themeAccentBackground(accent: Color): Color = accent.copy(alpha = 0.12f)
