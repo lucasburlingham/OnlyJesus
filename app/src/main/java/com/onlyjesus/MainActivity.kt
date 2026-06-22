@@ -4,6 +4,7 @@ import android.app.Activity
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.FormatBold
 import androidx.compose.material.icons.outlined.FormatItalic
 import androidx.compose.material.icons.outlined.FormatUnderlined
@@ -62,6 +63,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -107,6 +109,8 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextRange
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -251,6 +255,7 @@ private enum class ReaderPage {
 }
 
 private enum class LibraryTopSection {
+    Search,
     Timeline,
     Plans
 }
@@ -1693,6 +1698,9 @@ private fun ReaderScreen(context: Context) {
                                         items(verses) { verse ->
                                             var verseMenuExpanded by remember(verse.number, verse.text) { mutableStateOf(false) }
                                             val annotation = annotationFor(verse = verse.number)
+                                            val noteMarkdown = annotation?.noteMarkdown.orEmpty().trim()
+                                            val hasNote = noteMarkdown.isNotEmpty()
+                                            var notePopupExpanded by remember(verse.number) { mutableStateOf(false) }
                                             val verseText = "${bookName(currentBook)} $currentChapter:${verse.number} ${verse.text}"
                                             val verseDisplay = buildAnnotatedString {
                                                 withStyle(SpanStyle(color = if (verse.number == highlightedVerseNumber) themeMuted else contentSecondary.copy(alpha = 0.55f))) {
@@ -1725,11 +1733,47 @@ private fun ReaderScreen(context: Context) {
                                                         }
                                                         .padding(horizontal = 4.dp, vertical = 4.dp)
                                                 ) {
-                                                    Text(
-                                                        text = verseDisplay,
-                                                        fontSize = fontSizeSp.sp,
-                                                        fontFamily = selectedFontFamily()
-                                                    )
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = verseDisplay,
+                                                            fontSize = fontSizeSp.sp,
+                                                            fontFamily = selectedFontFamily(),
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                        if (hasNote) {
+                                                            Box {
+                                                                IconButton(
+                                                                    onClick = { notePopupExpanded = true },
+                                                                    modifier = Modifier.padding(start = 4.dp)
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Outlined.Description,
+                                                                        contentDescription = "View note",
+                                                                        tint = themeAccent.copy(alpha = 0.6f)
+                                                                    )
+                                                                }
+                                                                DropdownMenu(
+                                                                    expanded = notePopupExpanded,
+                                                                    onDismissRequest = { notePopupExpanded = false },
+                                                                    containerColor = MenuBackgroundColor
+                                                                ) {
+                                                                    Box(
+                                                                        modifier = Modifier
+                                                                            .width(280.dp)
+                                                                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                                                                            .semantics {
+                                                                                contentDescription = "Verse note content"
+                                                                            }
+                                                                    ) {
+                                                                        Text(noteMarkdown, color = MenuTextColor)
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                                 DropdownMenu(
                                                     expanded = verseMenuExpanded,
@@ -2029,6 +2073,25 @@ private fun ReaderScreen(context: Context) {
                                             }
 
                                             Text(readingPlansStatus, color = themeAccent.copy(alpha = 0.78f))
+
+                                            var planPendingDelete by remember { mutableStateOf<ReadingPlan?>(null) }
+
+                                            planPendingDelete?.let { pendingPlan ->
+                                                AlertDialog(
+                                                    onDismissRequest = { planPendingDelete = null },
+                                                    title = { Text("Delete plan?") },
+                                                    text = { Text("\"${pendingPlan.title}\" will be permanently deleted.") },
+                                                    confirmButton = {
+                                                        TextButton(onClick = {
+                                                            deleteReadingPlan(pendingPlan)
+                                                            planPendingDelete = null
+                                                        }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                                                    },
+                                                    dismissButton = {
+                                                        TextButton(onClick = { planPendingDelete = null }) { Text("Cancel") }
+                                                    }
+                                                )
+                                            }
 
                                             if (readingPlansLoading) {
                                                 Text("Loading plans...", color = contentSecondary)
