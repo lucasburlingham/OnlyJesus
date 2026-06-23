@@ -344,7 +344,6 @@ private fun ReaderScreen(context: Context) {
     var status by remember { mutableStateOf("No offline Bible selected.") }
     var isBusy by remember { mutableStateOf(false) }
     var installedExpanded by remember { mutableStateOf(false) }
-    var remoteExpanded by remember { mutableStateOf(false) }
     var referencePickerExpanded by remember { mutableStateOf(false) }
     var referencePickerStage by remember { mutableStateOf(ReferencePickerStage.Book) }
     var searchQuery by remember { mutableStateOf("") }
@@ -384,7 +383,6 @@ private fun ReaderScreen(context: Context) {
     val availableVerses = remember { mutableStateListOf<Int>() }
     val searchResults = remember { mutableStateListOf<VerseSearchHit>() }
     val installedVersions = remember { mutableStateListOf<InstalledVersion>() }
-    val remoteVersions = remember { mutableStateListOf<RemoteVersion>() }
     val fontOptions = remember { mutableStateListOf<FontOption>() }
     val settingsScrollState = rememberScrollState()
     var previousChapterPreview by remember { mutableStateOf<ChapterLoad?>(null) }
@@ -1061,7 +1059,8 @@ private fun ReaderScreen(context: Context) {
     fun fallbackVersion(): InstalledVersion? {
         return installedVersions.firstOrNull { version ->
             val name = version.file.name.lowercase()
-            name.contains("kjv") || version.label.lowercase().contains("kjv")
+            val label = version.label.lowercase()
+            name.contains("asv") || label.contains("asv") || label.contains("american standard")
         } ?: installedVersions.firstOrNull()
     }
 
@@ -1113,13 +1112,13 @@ private fun ReaderScreen(context: Context) {
                 if (fallback != null && selectedVersion?.file?.absolutePath != fallback.file.absolutePath) {
                     selectedVersion = fallback
                     prefs.saveVersion(fallback.file.absolutePath, fallback.label)
-                    status = "That version could not load. Falling back to KJV."
+                    status = "That version could not load. Falling back to ASV."
                     val fallbackLoad = runCatching { loadChapterData(currentBook, currentChapter, currentVerse) }.getOrNull()
                     if (fallbackLoad != null) {
                         applyChapterLoad(fallbackLoad)
                         updateChapterPreviews(fallback)
                     } else {
-                        status = "KJV also could not load."
+                        status = "ASV also could not load."
                     }
                 } else {
                     status = "That version could not load."
@@ -1232,7 +1231,31 @@ private fun ReaderScreen(context: Context) {
                 break
             }
         }
-        val preferredVersion = restoredVersion ?: installedVersions.firstOrNull()
+
+        var preferredVersion = restoredVersion
+            ?: installedVersions.firstOrNull { version ->
+                val name = version.file.name.lowercase()
+                val label = version.label.lowercase()
+                name.contains("asv") || label.contains("asv") || label.contains("american standard")
+            }
+            ?: installedVersions.firstOrNull()
+
+        if (restoredVersion == null && preferredVersion == null) {
+            val asvRemote = withContext(Dispatchers.IO) {
+                repository.fetchBundledVersions()
+                    .firstOrNull { remote ->
+                        val path = remote.path.lowercase()
+                        val label = remote.displayName.lowercase()
+                        path.contains("asv") || label.contains("asv") || label.contains("american standard")
+                    }
+            }
+            if (asvRemote != null) {
+                val installed = repository.installBundledVersion(asvRemote)
+                refreshInstalled()
+                preferredVersion = installed
+            }
+        }
+
         selectedVersion = if (showNonPublicDomainVersions || preferredVersion?.isPublicDomain != false) {
             preferredVersion
         } else {
@@ -2506,78 +2529,6 @@ private fun ReaderScreen(context: Context) {
                                     )
                                 }
 
-                                Box {
-                                    Button(
-                                        enabled = !isBusy,
-                                        onClick = {
-                                            scope.launch {
-                                                isBusy = true
-                                                status = "Loading version catalog..."
-                                                val fetched = repository.fetchRemoteVersions()
-                                                remoteVersions.clear()
-                                                remoteVersions.addAll(fetched)
-                                                val visibleRemoteCount = if (showNonPublicDomainVersions) {
-                                                    fetched.size
-                                                } else {
-                                                    fetched.count { it.isPublicDomain }
-                                                }
-                                                status = if (visibleRemoteCount == 0) {
-                                                    "No public-domain versions found from available sources."
-                                                } else {
-                                                    "Choose a version to download."
-                                                }
-                                                isBusy = false
-                                                remoteExpanded = visibleRemoteCount > 0
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = themeHighlight,
-                                            contentColor = themeAccent
-                                        ),
-                                        border = BorderStroke(1.dp, themeBorder)
-                                    ) {
-                                        Text("Refresh sources")
-                                    }
-
-                                    DropdownMenu(
-                                        expanded = remoteExpanded,
-                                        onDismissRequest = { remoteExpanded = false },
-                                        containerColor = MenuBackgroundColor
-                                    ) {
-                                        val visibleRemote = if (showNonPublicDomainVersions) {
-                                            remoteVersions
-                                        } else {
-                                            remoteVersions.filter { it.isPublicDomain }
-                                        }
-                                        if (visibleRemote.isEmpty()) {
-                                            DropdownMenuItem(
-                                                text = { Text("No public-domain versions available", color = MenuTextColor.copy(alpha = 0.7f)) },
-                                                onClick = { remoteExpanded = false }
-                                            )
-                                        } else {
-                                            visibleRemote.forEach { remote ->
-                                                DropdownMenuItem(
-                                                    text = { Text("${remote.displayName} (${remote.sizeMb} MB)", color = MenuTextColor) },
-                                                    onClick = {
-                                                        remoteExpanded = false
-                                                        scope.launch {
-                                                            isBusy = true
-                                                            status = "Downloading ${remote.displayName}..."
-                                                            val installed = repository.installRemoteVersion(remote)
-                                                            refreshInstalled()
-                                                            selectedVersion = installed
-                                                            prefs.saveVersion(installed.file.absolutePath, installed.label)
-                                                            status = "Downloaded ${installed.label}."
-                                                            loadChapter()
-                                                            isBusy = false
-                                                        }
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
                                 Text("Appearance", style = MaterialTheme.typography.titleMedium, color = themeAccent)
 
                                 Text("Theme mode", color = contentSecondary)
@@ -3555,7 +3506,7 @@ private class BibleRepository(private val context: Context) {
         }
         .toList()
 
-    suspend fun fetchRemoteVersions(): List<RemoteVersion> = withContext(Dispatchers.IO) {
+    fun fetchBundledVersions(): List<RemoteVersion> {
         val versions = mutableListOf<RemoteVersion>()
         for (source in BibleSources) {
             if (source.bundledAssetDir != null) {
@@ -3575,33 +3526,26 @@ private class BibleRepository(private val context: Context) {
                             isPublicDomain = isPublicDomainCopyright(copyright)
                         )
                     }
-            } else {
-                val fetched = runCatching { fetchTree(source, source.branch) }.getOrDefault(emptyList())
-                versions.addAll(fetched)
             }
         }
-        versions.sortedBy { it.displayName.lowercase() }
+        return versions.sortedBy { it.displayName.lowercase() }
     }
 
-    suspend fun installRemoteVersion(remote: RemoteVersion): InstalledVersion = withContext(Dispatchers.IO) {
+    suspend fun installBundledVersion(remote: RemoteVersion): InstalledVersion = withContext(Dispatchers.IO) {
         val targetName = remote.path.substringAfterLast('/')
         val target = File(File(versionsDir, remote.source.key), targetName)
         target.parentFile?.mkdirs()
         if (!target.exists()) {
-            if (remote.path.lowercase().endsWith(".xml")) {
-                if (remote.source.bundledAssetDir != null) {
-                    context.assets.open(remote.path).use { input ->
-                        target.outputStream().use { output -> input.copyTo(output) }
-                    }
-                } else {
-                    downloadFile(remote.downloadUrl, target)
+            if (remote.source.bundledAssetDir != null && remote.path.lowercase().endsWith(".xml")) {
+                context.assets.open(remote.path).use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
                 }
                 val legacyJson = File(target.parentFile, target.nameWithoutExtension + ".json")
                 if (legacyJson.exists()) {
                     legacyJson.delete()
                 }
             } else {
-                downloadFile(remote.downloadUrl, target)
+                error("Bundled versions can only be installed from local bundled assets.")
             }
         }
         val resolvedCopyright = remote.copyright ?: xmlBibleCopyrightFromFile(target)
@@ -3611,31 +3555,6 @@ private class BibleRepository(private val context: Context) {
             copyright = resolvedCopyright,
             isPublicDomain = isPublicDomainCopyright(resolvedCopyright)
         )
-    }
-
-    private fun fetchTree(source: BibleSource, branch: String): List<RemoteVersion> {
-        val endpoint = "https://api.github.com/repos/${source.owner}/${source.repo}/git/trees/$branch?recursive=1"
-        val payload = getText(endpoint)
-        val root = JSONObject(payload)
-        val tree = root.optJSONArray("tree") ?: return emptyList()
-
-        val versions = mutableListOf<RemoteVersion>()
-        for (i in 0 until tree.length()) {
-            val node = tree.getJSONObject(i)
-            if (node.optString("type") != "blob") continue
-            val path = node.optString("path")
-            val lower = path.lowercase()
-            val matchesPrefix = source.pathPrefix?.let { path.startsWith(it) } ?: true
-            val matchesSuffix = source.pathSuffix?.let { lower.endsWith(it.lowercase()) } ?: true
-            if (!matchesPrefix || !matchesSuffix) continue
-            versions += RemoteVersion(
-                source = source,
-                branch = branch,
-                path = path,
-                sizeBytes = node.optLong("size", 0)
-            )
-        }
-        return versions.sortedBy { it.displayName.lowercase() }
     }
 
     private fun sourceLabelFromPath(file: File): String? {

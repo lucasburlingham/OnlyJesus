@@ -13,7 +13,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 6
-        versionName = "1.4"
+        versionName = "1.4.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -32,6 +32,17 @@ android {
             )
         }
     }
+
+    applicationVariants.configureEach {
+        if (buildType.name == "release") {
+            outputs.configureEach {
+                val versionName = defaultConfig.versionName
+                val method = javaClass.methods.firstOrNull { it.name == "setOutputFileName" && it.parameterCount == 1 }
+                method?.invoke(this, "OnlyJesus-v$versionName-release.apk")
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
