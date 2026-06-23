@@ -5,6 +5,10 @@
 		"/^make debug$/": {
 			"approve": true,
 			"matchCommandLine": true
+		}, 
+		"cd *": {
+			"approve": true,
+			"matchCommandLine": true
 		}
 	}
 }
