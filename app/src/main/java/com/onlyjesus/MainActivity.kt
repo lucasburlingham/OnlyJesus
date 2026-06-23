@@ -290,38 +290,6 @@ private fun androidPrimaryThemeColor(context: Context): Color {
     }
 }
 
-private fun abandonSpeechAudioFocus(context: Context, request: AudioFocusRequest?) {
-    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        if (request != null) {
-            audioManager.abandonAudioFocusRequest(request)
-        }
-    } else {
-        @Suppress("DEPRECATION")
-        audioManager.abandonAudioFocus(null)
-    }
-}
-
-private fun ttsLanguageLabel(languageCode: String): String {
-    if (languageCode.isBlank()) return "System default"
-    return try {
-        val normalized = languageCode.replace('_', '-')
-        val locale = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            Locale.forLanguageTag(normalized)
-        } else {
-            val parts = normalized.split('-')
-            when (parts.size) {
-                1 -> Locale(parts[0])
-                2 -> Locale(parts[0], parts[1])
-                else -> Locale(parts[0], parts[1])
-            }
-        }
-        locale.getDisplayName(locale).replaceFirstChar { if (it.isLowerCase()) it.titlecase(locale) else it.toString() }
-    } catch (_: Exception) {
-        languageCode
-    }
-}
-
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -481,6 +449,53 @@ private fun ReaderScreen(context: Context) {
         return voice.locale.language == "en" && voice.locale.country == "US"
     }
 
+    fun ttsLanguageLabel(languageCode: String): String {
+        return if (languageCode == "en") {
+            "English (United States)"
+        } else {
+            Locale(languageCode).getDisplayLanguage(Locale.getDefault())
+        }
+    }
+
+    fun abandonSpeechAudioFocus() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = speechAudioFocusRequest ?: return
+            audioManager.abandonAudioFocusRequest(request)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(null)
+        }
+    }
+
+    fun stopReading() {
+        textToSpeech.stop()
+        isSpeaking = false
+        ttsSpeakingVerseNumber = null
+        ttsQueuedVerseNumbers = emptyList()
+        ttsPlaybackVerses = emptyList()
+        ttsPlaybackLabel = ""
+        ttsPlaybackIndex = 0
+        ttsStatus = "Playback stopped."
+        abandonSpeechAudioFocus()
+        updateMediaPlaybackState()
+    }
+
+    fun pauseReading(releaseAudioFocus: Boolean = true, focusLossPause: Boolean = false) {
+        textToSpeech.stop()
+        if (releaseAudioFocus) {
+            abandonSpeechAudioFocus()
+        }
+        isSpeaking = false
+        ttsSpeakingVerseNumber = null
+        ttsQueuedVerseNumbers = emptyList()
+        ttsPausedByFocusLoss = focusLossPause
+        ttsStatus = "Playback paused."
+        updateMediaPlaybackState()
+    }
+
+    var resumeReading: (() -> Unit)? = null
+
     fun speakVerses(referenceLabel: String, versesToRead: List<Verse>) {
         val sanitizedVerses = versesToRead.mapNotNull { verse ->
             val text = verse.text.replace(Regex("\\s+"), " ").trim()
@@ -522,7 +537,7 @@ private fun ReaderScreen(context: Context) {
             ttsPlaybackLabel = ""
             ttsPlaybackIndex = 0
             ttsStatus = "Text-to-speech could not start."
-            abandonSpeechAudioFocus(context, speechAudioFocusRequest)
+            abandonSpeechAudioFocus()
             updateMediaPlaybackState()
             return
         }
@@ -534,7 +549,7 @@ private fun ReaderScreen(context: Context) {
                 ttsPlaybackLabel = ""
                 ttsPlaybackIndex = 0
                 ttsStatus = "Text-to-speech could not queue all verses."
-                abandonSpeechAudioFocus(context, speechAudioFocusRequest)
+                abandonSpeechAudioFocus()
                 updateMediaPlaybackState()
                 return
             }
@@ -542,33 +557,6 @@ private fun ReaderScreen(context: Context) {
         isSpeaking = true
         ttsSpeakingVerseNumber = sanitizedVerses.first().number
         ttsStatus = "Reading $referenceLabel."
-        updateMediaPlaybackState()
-    }
-
-    fun stopReading() {
-        textToSpeech.stop()
-        isSpeaking = false
-        ttsSpeakingVerseNumber = null
-        ttsQueuedVerseNumbers = emptyList()
-        ttsPlaybackVerses = emptyList()
-        ttsPlaybackLabel = ""
-        ttsPlaybackIndex = 0
-        ttsPausedByFocusLoss = false
-        ttsStatus = "Playback stopped."
-        abandonSpeechAudioFocus(context, speechAudioFocusRequest)
-        updateMediaPlaybackState()
-    }
-
-    fun pauseReading(releaseAudioFocus: Boolean = true, focusLossPause: Boolean = false) {
-        textToSpeech.stop()
-        if (releaseAudioFocus) {
-            abandonSpeechAudioFocus(context, speechAudioFocusRequest)
-        }
-        isSpeaking = false
-        ttsSpeakingVerseNumber = null
-        ttsQueuedVerseNumbers = emptyList()
-        ttsPausedByFocusLoss = focusLossPause
-        ttsStatus = "Playback paused."
         updateMediaPlaybackState()
     }
 
@@ -590,10 +578,7 @@ private fun ReaderScreen(context: Context) {
                             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                                 mainHandler.post {
                                     ttsPausedByFocusLoss = true
-                                    textToSpeech.stop()
-                                    isSpeaking = false
-                                    ttsSpeakingVerseNumber = null
-                                    ttsQueuedVerseNumbers = emptyList()
+                                    pauseReading(releaseAudioFocus = false, focusLossPause = true)
                                     ttsStatus = "Playback paused by audio focus loss."
                                     updateMediaPlaybackState()
                                 }
@@ -603,9 +588,7 @@ private fun ReaderScreen(context: Context) {
                                 mainHandler.post {
                                     if (ttsPausedByFocusLoss && !isSpeaking && ttsPlaybackVerses.isNotEmpty()) {
                                         ttsPausedByFocusLoss = false
-                                        if (ttsPlaybackVerses.isNotEmpty()) {
-                                            speakVerses(ttsPlaybackLabel, ttsPlaybackVerses.drop(ttsPlaybackIndex))
-                                        }
+                                        resumeReading?.invoke()
                                     }
                                 }
                             }
@@ -639,7 +622,7 @@ private fun ReaderScreen(context: Context) {
             setPlaybackToLocal(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
             isActive = false
@@ -3547,19 +3530,29 @@ private class BibleRepository(private val context: Context) {
         return versions.sortedBy { it.displayName.lowercase() }
     }
 
-    fun installBundledVersion(remoteVersion: RemoteVersion): InstalledVersion {
-        val sourceDir = File(versionsDir, remoteVersion.source.key).apply { mkdirs() }
-        val targetFile = File(sourceDir, File(remoteVersion.path).name)
-        if (!targetFile.exists()) {
-            context.assets.open(remoteVersion.path).use { input ->
-                targetFile.outputStream().use { output -> input.copyTo(output) }
+    suspend fun installBundledVersion(remote: RemoteVersion): InstalledVersion = withContext(Dispatchers.IO) {
+        val targetName = remote.path.substringAfterLast('/')
+        val target = File(File(versionsDir, remote.source.key), targetName)
+        target.parentFile?.mkdirs()
+        if (!target.exists()) {
+            if (remote.source.bundledAssetDir != null && remote.path.lowercase().endsWith(".xml")) {
+                context.assets.open(remote.path).use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                val legacyJson = File(target.parentFile, target.nameWithoutExtension + ".json")
+                if (legacyJson.exists()) {
+                    legacyJson.delete()
+                }
+            } else {
+                error("Bundled versions can only be installed from local bundled assets.")
             }
         }
-        return InstalledVersion(
-            label = remoteVersion.displayName,
-            file = targetFile,
-            copyright = remoteVersion.copyright,
-            isPublicDomain = remoteVersion.isPublicDomain
+        val resolvedCopyright = remote.copyright ?: xmlBibleCopyrightFromFile(target)
+        InstalledVersion(
+            label = remote.displayName,
+            file = target,
+            copyright = resolvedCopyright,
+            isPublicDomain = isPublicDomainCopyright(resolvedCopyright)
         )
     }
 
