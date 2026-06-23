@@ -18,7 +18,7 @@ debug:
 	if [ -z "$$VERSION_NAME" ]; then \
 		echo "Unable to determine versionName from app/build.gradle.kts"; exit 1; \
 	fi; \
-	echo "Built OnlyJesus v$$VERSION_NAME debug build"; \
+	echo "Building OnlyJesus v$$VERSION_NAME debug build"; \
 	$(GRADLEW) assembleDebug
 
 release:
@@ -26,7 +26,7 @@ release:
 	if [ -z "$$VERSION_NAME" ]; then \
 		echo "Unable to determine versionName from app/build.gradle.kts"; exit 1; \
 	fi; \
-	echo "Built OnlyJesus v$$VERSION_NAME prod release"; \
+	echo "Building OnlyJesus v$$VERSION_NAME prod release"; \
 	$(GRADLEW) assembleRelease
 
 clean:
