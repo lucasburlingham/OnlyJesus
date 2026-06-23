@@ -1821,7 +1821,7 @@ private fun ReaderScreen(context: Context) {
                                                             verseMenuExpanded = false
                                                             refreshNoteEditor(VerseReference(currentBook, currentChapter, verse.number))
                                                             librarySection = LibrarySection.Notes
-                                                            currentPage = ReaderPage.Search
+                                                            currentPage = ReaderPage.Library
                                                         }
                                                     )
                                                     DropdownMenuItem(
@@ -1886,6 +1886,18 @@ private fun ReaderScreen(context: Context) {
                                 }
 
                                         when (libraryTopSection) {
+                                            LibraryTopSection.Search -> {
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(12.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Text("Search library", style = MaterialTheme.typography.titleMedium, color = themeAccent)
+                                                    Text("Use the library search controls to find bookmarked verses, notes, and recent history.", color = contentSecondary)
+                                                }
+                                            }
+
                                             LibraryTopSection.Timeline -> {
                                                 val activeReference = selectedLibraryVerse ?: VerseReference(currentBook, currentChapter, currentVerse)
                                                 val activeAnnotation = annotationFor(activeReference.book, activeReference.chapter, activeReference.verse)
@@ -2083,7 +2095,8 @@ private fun ReaderScreen(context: Context) {
                                                     text = { Text("\"${pendingPlan.title}\" will be permanently deleted.") },
                                                     confirmButton = {
                                                         TextButton(onClick = {
-                                                            deleteReadingPlan(pendingPlan)
+                                                            readingPlans.removeAll { it.id == pendingPlan.id }
+                                                            saveReadingPlans()
                                                             planPendingDelete = null
                                                         }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
                                                     },
