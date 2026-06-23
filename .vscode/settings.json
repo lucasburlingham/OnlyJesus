@@ -1,6 +1,10 @@
 {
 	"java.configuration.updateBuildConfiguration": "interactive",
 	"chat.tools.terminal.autoApprove": {
-		"./gradlew": true
+		"./gradlew": true,
+		"/^make debug$/": {
+			"approve": true,
+			"matchCommandLine": true
+		}
 	}
 }
